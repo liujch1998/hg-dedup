@@ -49,11 +49,6 @@ struct DupPtr {
     U64 ptr;
     bool dropped;
 };
-struct DupSpan {
-    U64 start_ptr;
-    vector<DupPtr> dup_ptrs;
-    vector<U8> text;
-};
 struct DupDoc {
     U64 doc_ix;
     U64 start_ptr;
@@ -67,9 +62,8 @@ class EngineDedup {
 public:
 
     EngineDedup(
-        const vector<string> index_dirs, const T eos_token_id, const T vocab_size, const size_t version)
-        : _eos_token_id(eos_token_id), _vocab_size(vocab_size), _version(version),
-          _doc_sep_id((T)(-1)), _doc_sep(vector<U8>(sizeof(T), 0xff))
+        const vector<string> index_dirs)
+        : _doc_sep_id((T)(-1)), _doc_sep(vector<U8>(sizeof(T), 0xff))
     {
 
         assert_little_endian();
@@ -179,27 +173,71 @@ public:
         }
     }
 
-    void get_lcp_len_at_rank(const size_t s, const U64 rank, U64* const out_lcp_len) {
-        const auto &shard = _shards[s];
-        U64 ptr1 = _convert_rank_to_ptr(shard, rank);
-        U64 ptr2 = _convert_rank_to_ptr(shard, rank + 1);
-        U64 lcp_len = 0;
-        // this only works on U8!
-        while (ptr1 < shard.tok_cnt && ptr2 < shard.tok_cnt && shard.ds[ptr1] == shard.ds[ptr2] && shard.ds[ptr1] != (U8)-1) {
-            lcp_len++;
-            ptr1++;
-            ptr2++;
+    // void get_lcp_len_at_rank(const size_t s, const U64 rank, U64* const out_lcp_len) {
+    //     const auto &shard = _shards[s];
+    //     U64 ptr1 = _convert_rank_to_ptr(shard, rank);
+    //     U64 ptr2 = _convert_rank_to_ptr(shard, rank + 1);
+    //     U64 lcp_len = 0;
+    //     // this only works on U8!
+    //     while (ptr1 < shard.tok_cnt && ptr2 < shard.tok_cnt && shard.ds[ptr1] == shard.ds[ptr2] && shard.ds[ptr1] != (U8)-1) {
+    //         lcp_len++;
+    //         ptr1++;
+    //         ptr2++;
+    //     }
+    //     *out_lcp_len = lcp_len;
+    // }
+
+    vector<DupPtr> find_dup_ptrs_parallel(const size_t min_len, const size_t num_threads) const {
+        const auto &shard = _shards[0];
+        U64 start_rank = 0;
+        vector<thread> threads;
+        vector<vector<DupPtr>> dup_ptrs_by_thread(num_threads);
+        for (size_t t = 0; t < num_threads; t++) {
+            U64 end_rank = (shard.tok_cnt / num_threads) * (t + 1);
+            // move forward end_rank until end_rank-1 and end_rank do not share prefix of length min_len
+            while (true) {
+                if (end_rank >= shard.tok_cnt) {
+                    break;
+                }
+                U64 ptr1 = _convert_rank_to_ptr(shard, end_rank - 1);
+                U64 ptr2 = _convert_rank_to_ptr(shard, end_rank);
+                if (!(ptr1 + min_len * sizeof(T) <= shard.ds_size &&
+                    ptr2 + min_len * sizeof(T) <= shard.ds_size &&
+                    memcmp(shard.ds + ptr1, shard.ds + ptr2, min_len * sizeof(T)) == 0 &&
+                    find(shard.ds + ptr1, shard.ds + ptr1 + min_len, (U8)-1) == shard.ds + ptr1 + min_len)) {
+                    break;
+                }
+                end_rank++;
+            }
+            threads.emplace_back(&EngineDedup::find_dup_ptrs_thread, this, min_len, start_rank, end_rank, &dup_ptrs_by_thread[t]);
+            start_rank = end_rank;
         }
-        *out_lcp_len = lcp_len;
+        for (auto &thread : threads) {
+            thread.join();
+        }
+
+        vector<DupPtr> dup_ptrs;
+        for (size_t t = 0; t < num_threads; t++) {
+            dup_ptrs.insert(dup_ptrs.end(), dup_ptrs_by_thread[t].begin(), dup_ptrs_by_thread[t].end());
+        }
+        sort(dup_ptrs.begin(), dup_ptrs.end(), [](const DupPtr &a, const DupPtr &b) {
+            return a.ptr < b.ptr;
+        });
+
+        return dup_ptrs;
     }
 
-    vector<DupDoc> find_dup_docs(size_t min_len) {
+    void find_dup_ptrs_thread(const size_t min_len, const U64 start_rank, const U64 end_rank, vector<DupPtr>* const out_dup_ptrs) const {
+        *out_dup_ptrs = find_dup_ptrs(min_len, start_rank, end_rank);
+    }
+
+    vector<DupPtr> find_dup_ptrs(const size_t min_len, const U64 start_rank, const U64 end_rank) const {
         const auto &shard = _shards[0];
-        U64 start_rank = 0; // the rank at which [start_rank, rank) share prefix of length min_len
+        U64 last_rank = start_rank; // the rank at which [last_rank, rank) share prefix of length min_len
         vector<DupPtr> dup_ptrs;
-        for (U64 rank = 1; rank < shard.tok_cnt; rank++) {
-            if (rank % 100000000 == 0) {
-                cout << "Processing rank = " << rank << endl;
+        for (U64 rank = start_rank + 1; rank < end_rank; rank++) {
+            if (start_rank == 0 && rank % 1000000000 == 0) {
+                cout << "Thread 0 processing rank " << rank << " / " << end_rank << endl;
             }
 
             // if rank-1 and rank share prefix of length min_len, keep moving
@@ -212,37 +250,28 @@ public:
                 continue;
             }
 
-            // process [start_rank, rank)
-            if (start_rank < rank - 1) { // the segment has more than one element
-                vector<U64> ptrs = _convert_ranks_to_ptrs(shard, start_rank, rank);
+            // process [last_rank, rank)
+            if (last_rank < rank - 1) { // the segment has more than one element
+                vector<U64> ptrs = _convert_ranks_to_ptrs(shard, last_rank, rank);
                 U64 smallest_ptr = *min_element(ptrs.begin(), ptrs.end());
-                for (U64 r = start_rank; r < rank; r++) {
-                    dup_ptrs.push_back(DupPtr{ .ptr = ptrs[r - start_rank], .dropped = (ptrs[r - start_rank] != smallest_ptr)});
+                for (U64 r = last_rank; r < rank; r++) {
+                    dup_ptrs.push_back(DupPtr{ .ptr = ptrs[r - last_rank], .dropped = (ptrs[r - last_rank] != smallest_ptr)});
                 }
             }
 
-            start_rank = rank;
+            last_rank = rank;
         }
 
         sort(dup_ptrs.begin(), dup_ptrs.end(), [](const DupPtr &a, const DupPtr &b) {
             return a.ptr < b.ptr;
         });
 
-        // vector<DupSpan> dup_spans;
-        // U64 start_ptr = dup_ptrs[0].ptr;
-        // vector<DupPtr> span_dup_ptrs;
-        // span_dup_ptrs.push_back(dup_ptrs[0]);
-        // for (size_t i = 1; i < dup_ptrs.size(); i++) {
-        //     if (dup_ptrs[i].ptr <= dup_ptrs[i-1].ptr + min_len) {
-        //         span_dup_ptrs.push_back(dup_ptrs[i]);
-        //         continue;
-        //     }
-        //     vector<U8> text(shard.ds + start_ptr, shard.ds + dup_ptrs[i-1].ptr + min_len);
-        //     dup_spans.push_back(DupSpan{ .start_ptr = start_ptr, .dup_ptrs = span_dup_ptrs, .text = text});
-        //     start_ptr = dup_ptrs[i].ptr;
-        //     span_dup_ptrs.clear();
-        //     span_dup_ptrs.push_back(dup_ptrs[i]);
-        // }
+        return dup_ptrs;
+    }
+
+    vector<DupDoc> find_dup_docs(const size_t min_len, const size_t num_threads) const {
+        const auto &shard = _shards[0];
+        vector<DupPtr> dup_ptrs = find_dup_ptrs_parallel(min_len, num_threads);
 
         vector<DupDoc> dup_docs;
         U64 doc_ix = (U64)(-1);
@@ -304,7 +333,6 @@ private:
     inline U64 _convert_ptr_to_doc_ix(const DatastoreShard &shard, const U64 ptr) const {
         assert (ptr < shard.ds_size);
         assert (ptr % sizeof(T) == 0);
-
         U64 lo = 0, hi = shard.doc_cnt;
         while (hi - lo > 1) {
             U64 mi = (lo + hi) >> 1;
@@ -315,15 +343,11 @@ private:
                 hi = mi;
             }
         }
-
         return lo;
     }
 
 private:
 
-    T _eos_token_id;
-    T _vocab_size;
-    size_t _version;
     T _doc_sep_id;
     vector<U8> _doc_sep;
     size_t _num_shards;

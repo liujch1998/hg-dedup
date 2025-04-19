@@ -4,9 +4,10 @@
 
 int main(int argc, char **argv) {
 
-    auto engine = EngineDedup<U8>({"../ha-infini-gram/index/v4_pileval_u8"}, 255, 255, 4);
-    U64 min_len = 200;
-    auto dup_docs = engine.find_dup_docs(min_len);
+    auto engine = EngineDedup<U8>({"../ha-infini-gram/index/v4_pileval_u8"});
+    size_t min_len = 1000;
+    size_t num_threads = 64;
+    auto dup_docs = engine.find_dup_docs(min_len, num_threads);
     cout << "dup_docs.size(): " << dup_docs.size() << endl;
 
     string dir = "dup_docs/pileval_minlen" + to_string(min_len);
