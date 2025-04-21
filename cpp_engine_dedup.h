@@ -16,6 +16,7 @@
 #include <thread>
 #include <fstream>
 #include <deque>
+#include <queue>
 
 #define U64 uint64_t
 #define U32 uint32_t
@@ -110,18 +111,8 @@ public:
                 assert (od_size % sizeof(U64) == 0);
                 U64 doc_cnt = od_size / sizeof(U64);
 
-                if (mt_paths.size() == 0) {
-                    auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt};
-                    _shards.push_back(shard);
-                } else {
-                    auto [mt, mt_size] = load_file(mt_paths[s], true);
-                    auto [om, om_size] = load_file(om_paths[s], true);
-
-                    assert (om_size == doc_cnt * sizeof(U64));
-
-                    auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt, mt, mt_size, om};
-                    _shards.push_back(shard);
-                }
+                auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt};
+                _shards.push_back(shard);
             }
         }
 
@@ -159,7 +150,7 @@ public:
             assert (fstat_ret != -1);
             U8 *ptr = static_cast<U8*>(mmap(NULL, s.st_size, PROT_READ, MAP_PRIVATE, f, 0));
             assert (ptr != MAP_FAILED);
-            madvise(ptr, s.st_size, MADV_RANDOM);
+            // madvise(ptr, s.st_size, MADV_RANDOM);
             close(f);
             return {ptr, s.st_size};
         }
@@ -187,11 +178,12 @@ public:
     //     *out_lcp_len = lcp_len;
     // }
 
-    vector<DupPtr> find_dup_ptrs_parallel(const size_t min_len, const size_t num_threads) const {
+    void find_remove_ranges_parallel(const size_t min_len, const size_t num_threads, const string ds_name) const {
         const auto &shard = _shards[0];
+
+        cout << "Launching threads to find remove_ptrs in different ranges of ranks ..." << endl;
         U64 start_rank = 0;
         vector<thread> threads;
-        vector<vector<DupPtr>> dup_ptrs_by_thread(num_threads);
         for (size_t t = 0; t < num_threads; t++) {
             U64 end_rank = (shard.tok_cnt / num_threads) * (t + 1);
             // move forward end_rank until end_rank-1 and end_rank do not share prefix of length min_len
@@ -209,35 +201,132 @@ public:
                 }
                 end_rank++;
             }
-            threads.emplace_back(&EngineDedup::find_dup_ptrs_thread, this, min_len, start_rank, end_rank, &dup_ptrs_by_thread[t]);
+            threads.emplace_back(&EngineDedup::find_remove_ptrs_thread, this, min_len, t, start_rank, end_rank, ds_name);
             start_rank = end_rank;
         }
         for (auto &thread : threads) {
             thread.join();
         }
 
-        vector<DupPtr> dup_ptrs;
+        cout << "Merging remove_ptrs from different threads ..." << endl;
+        vector<vector<U64>> remove_ptrs_by_thread(num_threads);
         for (size_t t = 0; t < num_threads; t++) {
-            dup_ptrs.insert(dup_ptrs.end(), dup_ptrs_by_thread[t].begin(), dup_ptrs_by_thread[t].end());
+            ifstream f("remove_ranges/" + ds_name + "_minlen" + to_string(min_len) + "/remove_ptrs.bin." + to_string(t), ios::binary);
+            assert (f.is_open());
+            f.seekg(0, ios::end);
+            U64 size = f.tellg();
+            f.seekg(0, ios::beg);
+            assert (size % sizeof(U64) == 0);
+            remove_ptrs_by_thread[t].resize(size / sizeof(U64));
+            f.read(reinterpret_cast<char*>(remove_ptrs_by_thread[t].data()), size);
+            f.close();
         }
-        sort(dup_ptrs.begin(), dup_ptrs.end(), [](const DupPtr &a, const DupPtr &b) {
-            return a.ptr < b.ptr;
-        });
+        vector<U64> remove_ptrs;
+        using HeapElement = pair<U64, size_t>;  // (value, vector_index)
+        priority_queue<HeapElement, vector<HeapElement>, greater<HeapElement>> heap;
+        vector<size_t> indices(num_threads, 0);
+        for (size_t t = 0; t < num_threads; t++) {
+            if (!remove_ptrs_by_thread[t].empty()) {
+                heap.push({remove_ptrs_by_thread[t][0], t});
+                indices[t]++;
+            }
+        }
+        while (!heap.empty()) {
+            auto [val, t] = heap.top();
+            heap.pop();
+            remove_ptrs.push_back(val);
+            if (indices[t] < remove_ptrs_by_thread[t].size()) {
+                heap.push({remove_ptrs_by_thread[t][indices[t]], t});
+                indices[t]++;
+            }
+        }
 
-        return dup_ptrs;
+        cout << "Total number of remove_ptrs: " << remove_ptrs.size() << endl;
+        string filename = "remove_ranges/" + ds_name + "_minlen" + to_string(min_len) + "/remove_ptrs.bin";
+        ofstream fout(filename, ios::binary);
+        fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
+        fout.close();
+        for (size_t t = 0; t < num_threads; t++) {
+            fs::remove("remove_ranges/" + ds_name + "_minlen" + to_string(min_len) + "/remove_ptrs.bin." + to_string(t));
+        }
+
+        cout << "Merging remove_ptrs into remove_ranges ..." << endl;
+        vector<pair<U64, U64>> remove_ranges;
+        U64 last_ptr = remove_ptrs[0]; // the pointer at which [last_ptr, ptr] should be merged into a single range
+        for (size_t i = 1; i < remove_ptrs.size(); i++) {
+            // It is guaranteed that there is no doc_sep in between remove_ptrs[i-1] and remove_ptrs[i]
+            if (remove_ptrs[i-1] + min_len * sizeof(T) >= remove_ptrs[i]) { // move forward
+                continue;
+            }
+            remove_ranges.push_back({last_ptr, remove_ptrs[i-1] + min_len * sizeof(T)});
+            last_ptr = remove_ptrs[i];
+        }
+        remove_ranges.push_back({last_ptr, remove_ptrs.back() + min_len * sizeof(T)});
+
+        cout << "Total number of remove_ranges: " << remove_ranges.size() << endl;
+        filename = "remove_ranges/" + ds_name + "_minlen" + to_string(min_len) + "/remove_ranges.bin";
+        ofstream fout_ranges(filename, ios::binary);
+        fout_ranges.write(reinterpret_cast<const char*>(remove_ranges.data()), remove_ranges.size() * sizeof(pair<U64, U64>));
+        fout_ranges.close();
     }
 
-    void find_dup_ptrs_thread(const size_t min_len, const U64 start_rank, const U64 end_rank, vector<DupPtr>* const out_dup_ptrs) const {
-        *out_dup_ptrs = find_dup_ptrs(min_len, start_rank, end_rank);
-    }
-
-    vector<DupPtr> find_dup_ptrs(const size_t min_len, const U64 start_rank, const U64 end_rank) const {
+    void find_remove_ptrs_thread(const size_t min_len, const size_t t, const U64 start_rank, const U64 end_rank, const string ds_name) const {
         const auto &shard = _shards[0];
         U64 last_rank = start_rank; // the rank at which [last_rank, rank) share prefix of length min_len
-        vector<DupPtr> dup_ptrs;
+        vector<U64> remove_ptrs;
         for (U64 rank = start_rank + 1; rank < end_rank; rank++) {
-            if (start_rank == 0 && rank % 1000000000 == 0) {
-                cout << "Thread 0 processing rank " << rank << " / " << end_rank << endl;
+            if (t == 0 && rank % 100000000 == 0) {
+                cout << "Thread 0 processing rank " << rank << " / " << end_rank << ", remove_ptrs.size(): " << remove_ptrs.size() << endl;
+            }
+
+            // if rank-1 and rank share prefix of length min_len, keep moving
+            U64 ptr1 = _convert_rank_to_ptr(shard, rank - 1);
+            U64 ptr2 = _convert_rank_to_ptr(shard, rank);
+            if (ptr1 + min_len * sizeof(T) <= shard.ds_size &&
+                ptr2 + min_len * sizeof(T) <= shard.ds_size &&
+                memcmp(shard.ds + ptr1, shard.ds + ptr2, min_len * sizeof(T)) == 0 &&
+                find(shard.ds + ptr1, shard.ds + ptr1 + min_len, (U8)-1) == shard.ds + ptr1 + min_len) {
+                continue;
+            }
+
+            // process [last_rank, rank)
+            if (last_rank < rank - 1) { // the segment has more than one element
+                vector<U64> ptrs = _convert_ranks_to_ptrs(shard, last_rank, rank);
+                U64 smallest_ptr = *min_element(ptrs.begin(), ptrs.end());
+                for (auto ptr : ptrs) {
+                    if (ptr != smallest_ptr) {
+                        remove_ptrs.push_back(ptr);
+                    }
+                }
+            }
+
+            last_rank = rank;
+        }
+
+        sort(remove_ptrs.begin(), remove_ptrs.end());
+
+        // write remove_ptrs to a binary file
+        string output_dir = "remove_ranges/" + ds_name + "_minlen" + to_string(min_len);
+        if (!fs::exists(output_dir)) {
+            fs::create_directory(output_dir);
+        }
+        string filename = output_dir + "/remove_ptrs.bin." + to_string(t);
+        ofstream fout(filename, ios::binary);
+        fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
+        fout.close();
+
+        if (t == 0) {
+            cout << "Thread 0 done, remove_ptrs.size(): " << remove_ptrs.size() << endl;
+        }
+    }
+
+    vector<DupPtr> find_dup_ptrs(const size_t min_len) const {
+        const auto &shard = _shards[0];
+        U64 last_rank = 0; // the rank at which [last_rank, rank) share prefix of length min_len
+        vector<DupPtr> dup_ptrs;
+        for (U64 rank = 1; rank < shard.tok_cnt; rank++) {
+            if (rank % 100000000 == 0) {
+                cout << "Processing rank " << rank << " / " << shard.tok_cnt << ", dup_ptrs.size(): " << dup_ptrs.size() << endl;
             }
 
             // if rank-1 and rank share prefix of length min_len, keep moving
@@ -269,9 +358,9 @@ public:
         return dup_ptrs;
     }
 
-    vector<DupDoc> find_dup_docs(const size_t min_len, const size_t num_threads) const {
+    vector<DupDoc> find_dup_docs(const size_t min_len) const {
         const auto &shard = _shards[0];
-        vector<DupPtr> dup_ptrs = find_dup_ptrs_parallel(min_len, num_threads);
+        vector<DupPtr> dup_ptrs = find_dup_ptrs(min_len);
 
         vector<DupDoc> dup_docs;
         U64 doc_ix = (U64)(-1);

@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
     size_t min_len = stoi(argv[2]);
     size_t num_threads = stoi(argv[3]);
 
-    auto dup_ptrs = engine.find_dup_ptrs_parallel(min_len, num_threads);
+    auto dup_ptrs = engine.find_dup_ptrs(min_len);
     cout << "dup_ptrs.size(): " << dup_ptrs.size() << endl;
 
     string output_dir = string(argv[1]) + "/dup_ptrs";

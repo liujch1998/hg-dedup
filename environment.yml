@@ -3,5 +3,6 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12.9
+  - gxx
   - pip:
     - infini-gram==2.5.1

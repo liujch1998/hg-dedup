@@ -1,3 +1,4 @@
-dup_spans/
+dup_ptrs/
 dup_docs/
+remove_ranges/
 a.out
