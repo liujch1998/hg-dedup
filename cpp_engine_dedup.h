@@ -17,7 +17,7 @@
 #include <fstream>
 #include <deque>
 #include <queue>
-
+#include <execution>
 #define U64 uint64_t
 #define U32 uint32_t
 #define U16 uint16_t
@@ -212,45 +212,28 @@ public:
         }
 
         cout << "Merging remove_ptrs from different threads ..." << endl;
-        vector<vector<U64>> remove_ptrs_by_thread(num_threads);
+        vector<U64> remove_ptrs;
         for (size_t t = 0; t < num_threads; t++) {
-            ifstream f(output_dir + "/remove_ptrs.bin." + to_string(t), ios::binary);
+            ifstream f(output_dir + "/remove_ptrs." + to_string(t), ios::binary);
             assert (f.is_open());
             f.seekg(0, ios::end);
             U64 size = f.tellg();
             f.seekg(0, ios::beg);
             assert (size % sizeof(U64) == 0);
-            remove_ptrs_by_thread[t].resize(size / sizeof(U64));
-            f.read(reinterpret_cast<char*>(remove_ptrs_by_thread[t].data()), size);
+            U64 prev_size = remove_ptrs.size();
+            remove_ptrs.resize(prev_size + size / sizeof(U64));
+            f.read(reinterpret_cast<char*>(remove_ptrs.data() + prev_size), size);
             f.close();
         }
-        vector<U64> remove_ptrs;
-        using HeapElement = pair<U64, size_t>;  // (value, vector_index)
-        priority_queue<HeapElement, vector<HeapElement>, greater<HeapElement>> heap;
-        vector<size_t> indices(num_threads, 0);
-        for (size_t t = 0; t < num_threads; t++) {
-            if (!remove_ptrs_by_thread[t].empty()) {
-                heap.push({remove_ptrs_by_thread[t][0], t});
-                indices[t]++;
-            }
-        }
-        while (!heap.empty()) {
-            auto [val, t] = heap.top();
-            heap.pop();
-            remove_ptrs.push_back(val);
-            if (indices[t] < remove_ptrs_by_thread[t].size()) {
-                heap.push({remove_ptrs_by_thread[t][indices[t]], t});
-                indices[t]++;
-            }
-        }
+        sort(std::execution::par, remove_ptrs.begin(), remove_ptrs.end());
 
         cout << "Total number of remove_ptrs: " << remove_ptrs.size() << endl;
-        string filename = output_dir + "/remove_ptrs.bin";
+        string filename = output_dir + "/remove_ptrs";
         ofstream fout(filename, ios::binary);
         fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
         fout.close();
         for (size_t t = 0; t < num_threads; t++) {
-            fs::remove(output_dir + "/remove_ptrs.bin." + to_string(t));
+            fs::remove(output_dir + "/remove_ptrs." + to_string(t));
         }
 
         cout << "Merging remove_ptrs into remove_ranges ..." << endl;
@@ -267,7 +250,7 @@ public:
         remove_ranges.push_back({last_ptr, remove_ptrs.back() + min_len * sizeof(T)});
 
         cout << "Total number of remove_ranges: " << remove_ranges.size() << endl;
-        filename = output_dir + "/remove_ranges.bin";
+        filename = output_dir + "/remove_ranges";
         ofstream fout_ranges(filename, ios::binary);
         fout_ranges.write(reinterpret_cast<const char*>(remove_ranges.data()), remove_ranges.size() * sizeof(pair<U64, U64>));
         fout_ranges.close();
@@ -309,7 +292,7 @@ public:
         sort(remove_ptrs.begin(), remove_ptrs.end());
 
         // write remove_ptrs to a binary file
-        string filename = output_dir + "/remove_ptrs.bin." + to_string(t);
+        string filename = output_dir + "/remove_ptrs." + to_string(t);
         ofstream fout(filename, ios::binary);
         fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
         fout.close();
