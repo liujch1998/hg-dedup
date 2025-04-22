@@ -178,8 +178,11 @@ public:
     //     *out_lcp_len = lcp_len;
     // }
 
-    void find_remove_ranges_parallel(const size_t min_len, const size_t num_threads, const string ds_name) const {
+    void find_remove_ranges_parallel(const size_t min_len, const size_t num_threads, const string output_dir) const {
         const auto &shard = _shards[0];
+        if (!fs::exists(output_dir)) {
+            fs::create_directory(output_dir);
+        }
 
         cout << "Launching threads to find remove_ptrs in different ranges of ranks ..." << endl;
         U64 start_rank = 0;
@@ -201,7 +204,7 @@ public:
                 }
                 end_rank++;
             }
-            threads.emplace_back(&EngineDedup::find_remove_ptrs_thread, this, min_len, t, start_rank, end_rank, ds_name);
+            threads.emplace_back(&EngineDedup::find_remove_ptrs_thread, this, min_len, t, start_rank, end_rank, output_dir);
             start_rank = end_rank;
         }
         for (auto &thread : threads) {
@@ -211,7 +214,7 @@ public:
         cout << "Merging remove_ptrs from different threads ..." << endl;
         vector<vector<U64>> remove_ptrs_by_thread(num_threads);
         for (size_t t = 0; t < num_threads; t++) {
-            ifstream f("remove_ranges/" + ds_name + "_minlen" + to_string(min_len) + "/remove_ptrs.bin." + to_string(t), ios::binary);
+            ifstream f(output_dir + "/remove_ptrs.bin." + to_string(t), ios::binary);
             assert (f.is_open());
             f.seekg(0, ios::end);
             U64 size = f.tellg();
@@ -242,12 +245,12 @@ public:
         }
 
         cout << "Total number of remove_ptrs: " << remove_ptrs.size() << endl;
-        string filename = "remove_ranges/" + ds_name + "_minlen" + to_string(min_len) + "/remove_ptrs.bin";
+        string filename = output_dir + "/remove_ptrs.bin";
         ofstream fout(filename, ios::binary);
         fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
         fout.close();
         for (size_t t = 0; t < num_threads; t++) {
-            fs::remove("remove_ranges/" + ds_name + "_minlen" + to_string(min_len) + "/remove_ptrs.bin." + to_string(t));
+            fs::remove(output_dir + "/remove_ptrs.bin." + to_string(t));
         }
 
         cout << "Merging remove_ptrs into remove_ranges ..." << endl;
@@ -264,13 +267,13 @@ public:
         remove_ranges.push_back({last_ptr, remove_ptrs.back() + min_len * sizeof(T)});
 
         cout << "Total number of remove_ranges: " << remove_ranges.size() << endl;
-        filename = "remove_ranges/" + ds_name + "_minlen" + to_string(min_len) + "/remove_ranges.bin";
+        filename = output_dir + "/remove_ranges.bin";
         ofstream fout_ranges(filename, ios::binary);
         fout_ranges.write(reinterpret_cast<const char*>(remove_ranges.data()), remove_ranges.size() * sizeof(pair<U64, U64>));
         fout_ranges.close();
     }
 
-    void find_remove_ptrs_thread(const size_t min_len, const size_t t, const U64 start_rank, const U64 end_rank, const string ds_name) const {
+    void find_remove_ptrs_thread(const size_t min_len, const size_t t, const U64 start_rank, const U64 end_rank, const string output_dir) const {
         const auto &shard = _shards[0];
         U64 last_rank = start_rank; // the rank at which [last_rank, rank) share prefix of length min_len
         vector<U64> remove_ptrs;
@@ -306,10 +309,6 @@ public:
         sort(remove_ptrs.begin(), remove_ptrs.end());
 
         // write remove_ptrs to a binary file
-        string output_dir = "remove_ranges/" + ds_name + "_minlen" + to_string(min_len);
-        if (!fs::exists(output_dir)) {
-            fs::create_directory(output_dir);
-        }
         string filename = output_dir + "/remove_ptrs.bin." + to_string(t);
         ofstream fout(filename, ios::binary);
         fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
