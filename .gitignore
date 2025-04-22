@@ -1,4 +1,6 @@
 dup_ptrs/
 dup_docs/
 remove_ranges/
+data/
 a.out
+*.so

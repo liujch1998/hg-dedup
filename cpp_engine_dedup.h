@@ -56,6 +56,15 @@ struct DupDoc {
     vector<DupPtr> dup_ptrs;
     vector<U8> text;
 };
+template<typename T=U8>
+struct DocResult {
+    U64 doc_ix;
+    U64 doc_start_ptr;
+    U64 doc_end_ptr;
+    U64 doc_len;
+    string metadata;
+    vector<T> token_ids;
+};
 
 template<typename T=U8>
 class EngineDedup {
@@ -111,8 +120,18 @@ public:
                 assert (od_size % sizeof(U64) == 0);
                 U64 doc_cnt = od_size / sizeof(U64);
 
-                auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt};
-                _shards.push_back(shard);
+                if (mt_paths.size() == 0) {
+                    auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt};
+                    _shards.push_back(shard);
+                } else {
+                    auto [mt, mt_size] = load_file(mt_paths[s], true);
+                    auto [om, om_size] = load_file(om_paths[s], true);
+
+                    assert (om_size == doc_cnt * sizeof(U64));
+
+                    auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt, mt, mt_size, om};
+                    _shards.push_back(shard);
+                }
             }
         }
 
@@ -370,6 +389,43 @@ public:
         return dup_docs;
     }
 
+    DocResult<T> get_doc_by_ix(const U64 doc_ix) const {
+
+        assert (doc_ix < get_total_doc_cnt());
+
+        size_t s = 0;
+        U64 local_doc_ix = doc_ix;
+        while (local_doc_ix >= _shards[s].doc_cnt) {
+            local_doc_ix -= _shards[s].doc_cnt;
+            s++;
+        }
+        const auto &shard = _shards[s];
+
+        U64 doc_start_ptr = _convert_doc_ix_to_ptr(shard, local_doc_ix) + sizeof(T); // because we want to skip the document separator
+        U64 doc_end_ptr = _convert_doc_ix_to_ptr(shard, local_doc_ix + 1);
+        U64 doc_len = (doc_end_ptr - doc_start_ptr) / sizeof(T);
+
+        string metadata = "";
+        if (shard.mt) {
+            U64 meta_start_ptr = _convert_doc_ix_to_meta_ptr(shard, local_doc_ix);
+            U64 meta_end_ptr = _convert_doc_ix_to_meta_ptr(shard, local_doc_ix + 1);
+            vector<U8> meta_chars(shard.mt + meta_start_ptr, shard.mt + meta_end_ptr);
+            metadata = string(meta_chars.begin(), meta_chars.end());
+        }
+
+        vector<T> token_ids(reinterpret_cast<T*>(shard.ds + doc_start_ptr), reinterpret_cast<T*>(shard.ds + doc_end_ptr));
+
+        return DocResult<T>{ .doc_ix = doc_ix, .doc_start_ptr = doc_start_ptr, .doc_end_ptr = doc_end_ptr, .doc_len = doc_len, .metadata = metadata, .token_ids = token_ids, };
+    }
+
+    U64 get_total_doc_cnt() const {
+        U64 total_doc_cnt = 0;
+        for (const auto &shard : _shards) {
+            total_doc_cnt += shard.doc_cnt;
+        }
+        return total_doc_cnt;
+    }
+
 private:
 
     inline U64 _convert_rank_to_ptr(const DatastoreShard &shard, const U64 rank) const {
@@ -415,6 +471,16 @@ private:
             }
         }
         return lo;
+    }
+
+    inline U64 _convert_doc_ix_to_meta_ptr(const DatastoreShard &shard, const U64 doc_ix) const {
+        assert (doc_ix <= shard.doc_cnt);
+        if (doc_ix == shard.doc_cnt) {
+            return shard.mt_size;
+        }
+        U64 ptr = 0;
+        memcpy(&ptr, shard.om + doc_ix * sizeof(U64), sizeof(U64));
+        return ptr;
     }
 
 private:

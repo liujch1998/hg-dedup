@@ -6,3 +6,6 @@ dependencies:
   - gxx
   - pip:
     - infini-gram==2.5.1
+    - pybind11
+    - numpy
+    - zstandard
