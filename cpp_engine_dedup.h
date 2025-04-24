@@ -17,7 +17,7 @@
 #include <fstream>
 #include <deque>
 #include <queue>
-#include <execution>
+
 #define U64 uint64_t
 #define U32 uint32_t
 #define U16 uint16_t
@@ -207,7 +207,7 @@ public:
         U64 start_rank = 0;
         vector<thread> threads;
         for (size_t t = 0; t < num_threads; t++) {
-            U64 end_rank = (shard.tok_cnt / num_threads) * (t + 1);
+            U64 end_rank = shard.tok_cnt * (t + 1) / num_threads;
             // move forward end_rank until end_rank-1 and end_rank do not share prefix of length min_len
             while (true) {
                 if (end_rank >= shard.tok_cnt) {
@@ -231,7 +231,7 @@ public:
         }
 
         cout << "Merging remove_ptrs from different threads ..." << endl;
-        vector<U64> remove_ptrs;
+        vector<vector<U64>> remove_ptrs_by_thread(num_threads); // TODO: change this to mmap, to avoid one extra copy of remove_ptrs in RAM
         for (size_t t = 0; t < num_threads; t++) {
             ifstream f(output_dir + "/remove_ptrs." + to_string(t), ios::binary);
             assert (f.is_open());
@@ -239,12 +239,37 @@ public:
             U64 size = f.tellg();
             f.seekg(0, ios::beg);
             assert (size % sizeof(U64) == 0);
-            U64 prev_size = remove_ptrs.size();
-            remove_ptrs.resize(prev_size + size / sizeof(U64));
-            f.read(reinterpret_cast<char*>(remove_ptrs.data() + prev_size), size);
+            remove_ptrs_by_thread[t].resize(size / sizeof(U64));
+            f.read(reinterpret_cast<char*>(remove_ptrs_by_thread[t].data()), size);
             f.close();
         }
-        sort(std::execution::par, remove_ptrs.begin(), remove_ptrs.end());
+        vector<vector<size_t>> start_by_thread_by_worker(num_threads, vector<size_t>(num_threads));
+        for (size_t w = 0; w < num_threads; w++) {
+            start_by_thread_by_worker[w][0] = remove_ptrs_by_thread[0].size() * w / num_threads;
+            U64 anchor = remove_ptrs_by_thread[0][start_by_thread_by_worker[w][0]];
+            for (size_t t = 1; t < num_threads; t++) {
+                start_by_thread_by_worker[w][t] = (w == 0) ? 0 : std::lower_bound(remove_ptrs_by_thread[t].begin(), remove_ptrs_by_thread[t].end(), anchor) - remove_ptrs_by_thread[t].begin();
+            }
+        }
+        vector<vector<PSS>> range_by_thread_by_worker(num_threads, vector<PSS>(num_threads));
+        for (size_t w = 0; w < num_threads; w++) {
+            for (size_t t = 0; t < num_threads; t++) {
+                range_by_thread_by_worker[w][t].first = start_by_thread_by_worker[w][t];
+                range_by_thread_by_worker[w][t].second = (w == num_threads - 1) ? remove_ptrs_by_thread[t].size() : start_by_thread_by_worker[w+1][t];
+            }
+        }
+        vector<vector<U64>> remove_ptrs_by_worker(num_threads);
+        vector<thread> workers;
+        for (size_t w = 0; w < num_threads; w++) {
+            workers.emplace_back(&EngineDedup::merge_worker, this, &remove_ptrs_by_thread, &range_by_thread_by_worker[w], &remove_ptrs_by_worker[w]);
+        }
+        for (auto &worker : workers) {
+            worker.join();
+        }
+        vector<U64> remove_ptrs; // TODO: get rid of this concat, to avoid one extra copy of remove_ptrs in RAM
+        for (size_t w = 0; w < num_threads; w++) {
+            remove_ptrs.insert(remove_ptrs.end(), remove_ptrs_by_worker[w].begin(), remove_ptrs_by_worker[w].end());
+        }
 
         cout << "Total number of remove_ptrs: " << remove_ptrs.size() << endl;
         string filename = output_dir + "/remove_ptrs";
@@ -318,6 +343,29 @@ public:
 
         if (t == 0) {
             cout << "Thread 0 done, remove_ptrs.size(): " << remove_ptrs.size() << endl;
+        }
+    }
+
+    void merge_worker(const vector<vector<U64>>* const remove_ptrs_by_thread, const vector<PSS>* const range_by_thread, vector<U64>* const remove_ptrs) const {
+        using HeapElement = pair<U64, size_t>;
+        priority_queue<HeapElement, vector<HeapElement>, greater<HeapElement>> min_heap;
+        size_t num_threads = remove_ptrs_by_thread->size();
+        vector<size_t> ptr_by_thread(num_threads, 0);
+        for (size_t t = 0; t < num_threads; t++) {
+            ptr_by_thread[t] = (*range_by_thread)[t].first;
+            if (ptr_by_thread[t] < (*range_by_thread)[t].second) {
+                min_heap.push({(*remove_ptrs_by_thread)[t][ptr_by_thread[t]], t});
+                ptr_by_thread[t]++;
+            }
+        }
+        while (!min_heap.empty()) {
+            auto [ptr, t] = min_heap.top();
+            min_heap.pop();
+            remove_ptrs->push_back(ptr);
+            if (ptr_by_thread[t] < (*range_by_thread)[t].second) {
+                min_heap.push({(*remove_ptrs_by_thread)[t][ptr_by_thread[t]], t});
+                ptr_by_thread[t]++;
+            }
         }
     }
 
