@@ -18,7 +18,7 @@ PYBIND11_MODULE(cpp_engine_dedup, m) {
         .def_readwrite("token_ids", &DocResult<U8>::token_ids);
 
     py::class_<EngineDedup<U8>>(m, "EngineDedup_U8")
-        .def(py::init<const vector<string>>())
+        .def(py::init<const vector<string>, const bool>())
         .def("get_total_doc_cnt", &EngineDedup<U8>::get_total_doc_cnt)
         .def("get_doc_by_ix", &EngineDedup<U8>::get_doc_by_ix);
 }

@@ -12,7 +12,7 @@ parser.add_argument("--remove_ranges_path", type=str, default=None)
 parser.add_argument("--output_dir", type=str, required=True)
 args = parser.parse_args()
 
-engine = EngineDedup_U8([args.index_dir])
+engine = EngineDedup_U8([args.index_dir], True)
 doc_cnt = engine.get_total_doc_cnt()
 
 remove_ranges = np.zeros((0, 2), dtype=np.uint64)

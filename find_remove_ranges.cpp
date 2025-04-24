@@ -9,7 +9,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    auto engine = EngineDedup<U8>({argv[1]});
+    auto engine = EngineDedup<U8>({argv[1]}, false);
     size_t min_len = stoi(argv[2]);
     size_t num_threads = stoi(argv[3]);
     string output_dir = argv[4];

@@ -72,7 +72,7 @@ class EngineDedup {
 public:
 
     EngineDedup(
-        const vector<string> index_dirs)
+        const vector<string> index_dirs, const bool load_metadata)
         : _doc_sep_id((T)(-1)), _doc_sep(vector<U8>(sizeof(T), 0xff))
     {
 
@@ -120,7 +120,7 @@ public:
                 assert (od_size % sizeof(U64) == 0);
                 U64 doc_cnt = od_size / sizeof(U64);
 
-                if (mt_paths.size() == 0) {
+                if (!load_metadata || mt_paths.size() == 0) {
                     auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt};
                     _shards.push_back(shard);
                 } else {
@@ -204,6 +204,7 @@ public:
         }
 
         cout << "Launching threads to find remove_ptrs in different ranges of ranks ..." << endl;
+        auto start_time = chrono::high_resolution_clock::now();
         U64 start_rank = 0;
         vector<thread> threads;
         for (size_t t = 0; t < num_threads; t++) {
@@ -229,8 +230,11 @@ public:
         for (auto &thread : threads) {
             thread.join();
         }
+        auto end_time = chrono::high_resolution_clock::now();
+        cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
 
         cout << "Merging remove_ptrs from different threads ..." << endl;
+        start_time = chrono::high_resolution_clock::now();
         vector<vector<U64>> remove_ptrs_by_thread(num_threads); // TODO: change this to mmap, to avoid one extra copy of remove_ptrs in RAM
         for (size_t t = 0; t < num_threads; t++) {
             ifstream f(output_dir + "/remove_ptrs." + to_string(t), ios::binary);
@@ -270,7 +274,6 @@ public:
         for (size_t w = 0; w < num_threads; w++) {
             remove_ptrs.insert(remove_ptrs.end(), remove_ptrs_by_worker[w].begin(), remove_ptrs_by_worker[w].end());
         }
-
         cout << "Total number of remove_ptrs: " << remove_ptrs.size() << endl;
         string filename = output_dir + "/remove_ptrs";
         ofstream fout(filename, ios::binary);
@@ -279,8 +282,11 @@ public:
         for (size_t t = 0; t < num_threads; t++) {
             fs::remove(output_dir + "/remove_ptrs." + to_string(t));
         }
+        end_time = chrono::high_resolution_clock::now();
+        cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
 
         cout << "Merging remove_ptrs into remove_ranges ..." << endl;
+        start_time = chrono::high_resolution_clock::now();
         vector<pair<U64, U64>> remove_ranges;
         U64 last_ptr = remove_ptrs[0]; // the pointer at which [last_ptr, ptr] should be merged into a single range
         for (size_t i = 1; i < remove_ptrs.size(); i++) {
@@ -292,12 +298,13 @@ public:
             last_ptr = remove_ptrs[i];
         }
         remove_ranges.push_back({last_ptr, remove_ptrs.back() + min_len * sizeof(T)});
-
         cout << "Total number of remove_ranges: " << remove_ranges.size() << endl;
         filename = output_dir + "/remove_ranges";
         ofstream fout_ranges(filename, ios::binary);
         fout_ranges.write(reinterpret_cast<const char*>(remove_ranges.data()), remove_ranges.size() * sizeof(pair<U64, U64>));
         fout_ranges.close();
+        end_time = chrono::high_resolution_clock::now();
+        cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
     }
 
     void find_remove_ptrs_thread(const size_t min_len, const size_t t, const U64 start_rank, const U64 end_rank, const string output_dir) const {
