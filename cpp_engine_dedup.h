@@ -169,7 +169,7 @@ public:
             assert (fstat_ret != -1);
             U8 *ptr = static_cast<U8*>(mmap(NULL, s.st_size, PROT_READ, MAP_PRIVATE, f, 0));
             assert (ptr != MAP_FAILED);
-            // madvise(ptr, s.st_size, MADV_RANDOM);
+            madvise(ptr, s.st_size, MADV_SEQUENTIAL);
             close(f);
             return {ptr, s.st_size};
         }
@@ -182,20 +182,6 @@ public:
             munmap(ptr, size);
         }
     }
-
-    // void get_lcp_len_at_rank(const size_t s, const U64 rank, U64* const out_lcp_len) {
-    //     const auto &shard = _shards[s];
-    //     U64 ptr1 = _convert_rank_to_ptr(shard, rank);
-    //     U64 ptr2 = _convert_rank_to_ptr(shard, rank + 1);
-    //     U64 lcp_len = 0;
-    //     // this only works on U8!
-    //     while (ptr1 < shard.tok_cnt && ptr2 < shard.tok_cnt && shard.ds[ptr1] == shard.ds[ptr2] && shard.ds[ptr1] != (U8)-1) {
-    //         lcp_len++;
-    //         ptr1++;
-    //         ptr2++;
-    //     }
-    //     *out_lcp_len = lcp_len;
-    // }
 
     void find_remove_ranges_parallel(const size_t min_len, const size_t num_threads, const string output_dir) const {
         const auto &shard = _shards[0];
@@ -284,27 +270,28 @@ public:
     }
 
     void find_remove_ptrs_thread(const size_t min_len, const size_t t, const U64 start_rank, const U64 end_rank, const string output_dir, vector<U64>* const out_remove_ptrs) const {
+
         const auto &shard = _shards[0];
-        U64 last_rank = start_rank; // the rank at which [last_rank, rank) share prefix of length min_len
+
         vector<U64> remove_ptrs;
+        vector<U64> ptrs{_convert_rank_to_ptr(shard, start_rank)};
         for (U64 rank = start_rank + 1; rank < end_rank; rank++) {
             if (t == 0 && rank % 100000000 == 0) {
                 cout << "Thread 0 processing rank " << rank << " / " << end_rank << ", remove_ptrs.size(): " << remove_ptrs.size() << endl;
             }
 
             // if rank-1 and rank share prefix of length min_len, keep moving
-            U64 ptr1 = _convert_rank_to_ptr(shard, rank - 1);
+            U64 ptr1 = ptrs.back();
             U64 ptr2 = _convert_rank_to_ptr(shard, rank);
             if (ptr1 + min_len * sizeof(T) <= shard.ds_size &&
                 ptr2 + min_len * sizeof(T) <= shard.ds_size &&
                 memcmp(shard.ds + ptr1, shard.ds + ptr2, min_len * sizeof(T)) == 0 &&
                 find(shard.ds + ptr1, shard.ds + ptr1 + min_len, (U8)-1) == shard.ds + ptr1 + min_len) {
+                ptrs.push_back(ptr2);
                 continue;
             }
 
-            // process [last_rank, rank)
-            if (last_rank < rank - 1) { // the segment has more than one element
-                vector<U64> ptrs = _convert_ranks_to_ptrs(shard, last_rank, rank);
+            if (ptrs.size() > 1) { // the segment has more than one element
                 U64 smallest_ptr = *min_element(ptrs.begin(), ptrs.end());
                 for (auto ptr : ptrs) {
                     if (ptr != smallest_ptr) {
@@ -313,7 +300,8 @@ public:
                 }
             }
 
-            last_rank = rank;
+            ptrs.clear();
+            ptrs.push_back(ptr2);
         }
 
         sort(remove_ptrs.begin(), remove_ptrs.end());
