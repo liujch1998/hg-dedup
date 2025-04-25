@@ -1,6 +1,4 @@
-dup_ptrs/
-dup_docs/
-remove_ranges/
 data/
+output/
 a.out
 *.so

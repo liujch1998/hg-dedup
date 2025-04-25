@@ -189,9 +189,9 @@ public:
             fs::create_directory(output_dir);
         }
 
-        // Basically ...
-        // Option 1: do not write parts to disk. Requires more RAM, less disk swap space, and faster
-        // Option 2: write parts to disk and mmap back. Requires less RAM, more disk swap space, and slower
+        // This function: do not write parts to disk. Requires more RAM, less disk swap space, and faster
+        // To save some RAM: write parts to disk and mmap back. Requires less RAM, more disk swap space, and slower
+        // To save more RAM: mmap the text file. Requires less RAM, and slower
 
         cout << "Launching threads to find remove_ptrs in different ranges of ranks ..." << endl;
         auto start_time = chrono::high_resolution_clock::now();
@@ -264,6 +264,10 @@ public:
                 }
             }
         }
+        string filename = output_dir + "/remove_ranges";
+        ofstream fout(filename, ios::binary);
+        fout.write(reinterpret_cast<const char*>(remove_ranges.data()), remove_ranges.size() * sizeof(PSS));
+        fout.close();
         cout << "remove_ranges.size(): " << remove_ranges.size() << endl;
         end_time = chrono::high_resolution_clock::now();
         cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
