@@ -203,8 +203,13 @@ public:
             fs::create_directory(output_dir);
         }
 
+        // Basically ...
+        // Option 1: do not write parts to disk. Requires more RAM, less disk swap space, and faster
+        // Option 2: write parts to disk and mmap back. Requires less RAM, more disk swap space, and slower
+
         cout << "Launching threads to find remove_ptrs in different ranges of ranks ..." << endl;
         auto start_time = chrono::high_resolution_clock::now();
+        vector<vector<U64>> remove_ptrs_by_thread(num_threads);
         U64 start_rank = 0;
         vector<thread> threads;
         for (size_t t = 0; t < num_threads; t++) {
@@ -224,29 +229,22 @@ public:
                 }
                 end_rank++;
             }
-            threads.emplace_back(&EngineDedup::find_remove_ptrs_thread, this, min_len, t, start_rank, end_rank, output_dir);
+            threads.emplace_back(&EngineDedup::find_remove_ptrs_thread, this, min_len, t, start_rank, end_rank, output_dir, &remove_ptrs_by_thread[t]);
             start_rank = end_rank;
         }
         for (auto &thread : threads) {
             thread.join();
         }
+        size_t total_remove_ptrs = 0;
+        for (size_t t = 0; t < num_threads; t++) {
+            total_remove_ptrs += remove_ptrs_by_thread[t].size();
+        }
+        cout << "total_remove_ptrs: " << total_remove_ptrs << endl;
         auto end_time = chrono::high_resolution_clock::now();
         cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
 
-        cout << "Merging remove_ptrs from different threads ..." << endl;
+        cout << "Merging remove_ptrs into remove_ranges ..." << endl;
         start_time = chrono::high_resolution_clock::now();
-        vector<vector<U64>> remove_ptrs_by_thread(num_threads); // TODO: change this to mmap, to avoid one extra copy of remove_ptrs in RAM
-        for (size_t t = 0; t < num_threads; t++) {
-            ifstream f(output_dir + "/remove_ptrs." + to_string(t), ios::binary);
-            assert (f.is_open());
-            f.seekg(0, ios::end);
-            U64 size = f.tellg();
-            f.seekg(0, ios::beg);
-            assert (size % sizeof(U64) == 0);
-            remove_ptrs_by_thread[t].resize(size / sizeof(U64));
-            f.read(reinterpret_cast<char*>(remove_ptrs_by_thread[t].data()), size);
-            f.close();
-        }
         vector<vector<size_t>> start_by_thread_by_worker(num_threads, vector<size_t>(num_threads));
         for (size_t w = 0; w < num_threads; w++) {
             start_by_thread_by_worker[w][0] = remove_ptrs_by_thread[0].size() * w / num_threads;
@@ -255,59 +253,37 @@ public:
                 start_by_thread_by_worker[w][t] = (w == 0) ? 0 : std::lower_bound(remove_ptrs_by_thread[t].begin(), remove_ptrs_by_thread[t].end(), anchor) - remove_ptrs_by_thread[t].begin();
             }
         }
-        vector<vector<PSS>> range_by_thread_by_worker(num_threads, vector<PSS>(num_threads));
+        vector<vector<PSS>> start_end_by_thread_by_worker(num_threads, vector<PSS>(num_threads));
         for (size_t w = 0; w < num_threads; w++) {
             for (size_t t = 0; t < num_threads; t++) {
-                range_by_thread_by_worker[w][t].first = start_by_thread_by_worker[w][t];
-                range_by_thread_by_worker[w][t].second = (w == num_threads - 1) ? remove_ptrs_by_thread[t].size() : start_by_thread_by_worker[w+1][t];
+                start_end_by_thread_by_worker[w][t].first = start_by_thread_by_worker[w][t];
+                start_end_by_thread_by_worker[w][t].second = (w == num_threads - 1) ? remove_ptrs_by_thread[t].size() : start_by_thread_by_worker[w+1][t];
             }
         }
-        vector<vector<U64>> remove_ptrs_by_worker(num_threads);
+        vector<vector<PSS>> remove_ranges_by_worker(num_threads);
         vector<thread> workers;
         for (size_t w = 0; w < num_threads; w++) {
-            workers.emplace_back(&EngineDedup::merge_worker, this, &remove_ptrs_by_thread, &range_by_thread_by_worker[w], &remove_ptrs_by_worker[w]);
+            workers.emplace_back(&EngineDedup::merge_ptrs_into_ranges_worker, this, min_len, &remove_ptrs_by_thread, &start_end_by_thread_by_worker[w], &remove_ranges_by_worker[w]);
         }
         for (auto &worker : workers) {
             worker.join();
         }
-        vector<U64> remove_ptrs; // TODO: get rid of this concat, to avoid one extra copy of remove_ptrs in RAM
+        vector<PSS> remove_ranges;
         for (size_t w = 0; w < num_threads; w++) {
-            remove_ptrs.insert(remove_ptrs.end(), remove_ptrs_by_worker[w].begin(), remove_ptrs_by_worker[w].end());
-        }
-        cout << "Total number of remove_ptrs: " << remove_ptrs.size() << endl;
-        string filename = output_dir + "/remove_ptrs";
-        ofstream fout(filename, ios::binary);
-        fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
-        fout.close();
-        for (size_t t = 0; t < num_threads; t++) {
-            fs::remove(output_dir + "/remove_ptrs." + to_string(t));
-        }
-        end_time = chrono::high_resolution_clock::now();
-        cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
-
-        cout << "Merging remove_ptrs into remove_ranges ..." << endl;
-        start_time = chrono::high_resolution_clock::now();
-        vector<pair<U64, U64>> remove_ranges;
-        U64 last_ptr = remove_ptrs[0]; // the pointer at which [last_ptr, ptr] should be merged into a single range
-        for (size_t i = 1; i < remove_ptrs.size(); i++) {
-            // It is guaranteed that there is no doc_sep in between remove_ptrs[i-1] and remove_ptrs[i]
-            if (remove_ptrs[i-1] + min_len * sizeof(T) >= remove_ptrs[i]) { // move forward
-                continue;
+            for (size_t i = 0; i < remove_ranges_by_worker[w].size(); i++) {
+                if (i == 0 && remove_ranges.size() > 0 && remove_ranges.back().second >= remove_ranges_by_worker[w][i].first) { // should merge these ranges
+                    remove_ranges.back().second = remove_ranges_by_worker[w][i].second;
+                } else {
+                    remove_ranges.push_back(remove_ranges_by_worker[w][i]);
+                }
             }
-            remove_ranges.push_back({last_ptr, remove_ptrs[i-1] + min_len * sizeof(T)});
-            last_ptr = remove_ptrs[i];
         }
-        remove_ranges.push_back({last_ptr, remove_ptrs.back() + min_len * sizeof(T)});
-        cout << "Total number of remove_ranges: " << remove_ranges.size() << endl;
-        filename = output_dir + "/remove_ranges";
-        ofstream fout_ranges(filename, ios::binary);
-        fout_ranges.write(reinterpret_cast<const char*>(remove_ranges.data()), remove_ranges.size() * sizeof(pair<U64, U64>));
-        fout_ranges.close();
+        cout << "remove_ranges.size(): " << remove_ranges.size() << endl;
         end_time = chrono::high_resolution_clock::now();
         cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
     }
 
-    void find_remove_ptrs_thread(const size_t min_len, const size_t t, const U64 start_rank, const U64 end_rank, const string output_dir) const {
+    void find_remove_ptrs_thread(const size_t min_len, const size_t t, const U64 start_rank, const U64 end_rank, const string output_dir, vector<U64>* const out_remove_ptrs) const {
         const auto &shard = _shards[0];
         U64 last_rank = start_rank; // the rank at which [last_rank, rank) share prefix of length min_len
         vector<U64> remove_ptrs;
@@ -341,26 +317,30 @@ public:
         }
 
         sort(remove_ptrs.begin(), remove_ptrs.end());
+        auto remove_ptrs_size = remove_ptrs.size();
 
-        // write remove_ptrs to a binary file
-        string filename = output_dir + "/remove_ptrs." + to_string(t);
-        ofstream fout(filename, ios::binary);
-        fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
-        fout.close();
+        if (out_remove_ptrs) { // return remove_ptrs to the caller
+            *out_remove_ptrs = move(remove_ptrs);
+        } else { // write remove_ptrs to a binary file
+            string filename = output_dir + "/remove_ptrs." + to_string(t);
+            ofstream fout(filename, ios::binary);
+            fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
+            fout.close();
+        }
 
         if (t == 0) {
-            cout << "Thread 0 done, remove_ptrs.size(): " << remove_ptrs.size() << endl;
+            cout << "Thread 0 done, remove_ptrs.size(): " << remove_ptrs_size << endl;
         }
     }
 
-    void merge_worker(const vector<vector<U64>>* const remove_ptrs_by_thread, const vector<PSS>* const range_by_thread, vector<U64>* const remove_ptrs) const {
+    void merge_ptrs_into_ranges_worker(const size_t min_len, const vector<vector<U64>>* const remove_ptrs_by_thread, const vector<PSS>* const start_end_by_thread, vector<PSS>* const remove_ranges) const {
         using HeapElement = pair<U64, size_t>;
         priority_queue<HeapElement, vector<HeapElement>, greater<HeapElement>> min_heap;
         size_t num_threads = remove_ptrs_by_thread->size();
         vector<size_t> ptr_by_thread(num_threads, 0);
         for (size_t t = 0; t < num_threads; t++) {
-            ptr_by_thread[t] = (*range_by_thread)[t].first;
-            if (ptr_by_thread[t] < (*range_by_thread)[t].second) {
+            ptr_by_thread[t] = (*start_end_by_thread)[t].first;
+            if (ptr_by_thread[t] < (*start_end_by_thread)[t].second) {
                 min_heap.push({(*remove_ptrs_by_thread)[t][ptr_by_thread[t]], t});
                 ptr_by_thread[t]++;
             }
@@ -368,8 +348,12 @@ public:
         while (!min_heap.empty()) {
             auto [ptr, t] = min_heap.top();
             min_heap.pop();
-            remove_ptrs->push_back(ptr);
-            if (ptr_by_thread[t] < (*range_by_thread)[t].second) {
+            if (remove_ranges->size() > 0 && remove_ranges->back().second >= ptr) {
+                remove_ranges->back().second = ptr + min_len * sizeof(T);
+            } else {
+                remove_ranges->push_back({ptr, ptr + min_len * sizeof(T)});
+            }
+            if (ptr_by_thread[t] < (*start_end_by_thread)[t].second) {
                 min_heap.push({(*remove_ptrs_by_thread)[t][ptr_by_thread[t]], t});
                 ptr_by_thread[t]++;
             }
