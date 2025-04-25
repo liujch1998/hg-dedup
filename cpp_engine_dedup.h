@@ -169,7 +169,7 @@ public:
             assert (fstat_ret != -1);
             U8 *ptr = static_cast<U8*>(mmap(NULL, s.st_size, PROT_READ, MAP_PRIVATE, f, 0));
             assert (ptr != MAP_FAILED);
-            madvise(ptr, s.st_size, MADV_SEQUENTIAL);
+            // madvise(ptr, s.st_size, MADV_SEQUENTIAL);
             close(f);
             return {ptr, s.st_size};
         }
