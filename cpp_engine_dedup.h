@@ -183,7 +183,7 @@ public:
         }
     }
 
-    void find_remove_ranges_parallel(const size_t min_len, const size_t num_threads, const string output_dir, const bool low_ram) const {
+    void find_remove_ranges_parallel(const size_t min_len, const size_t num_threads, const string output_dir, const bool low_ram, const size_t num_batches) const {
         const auto &shard = _shards[0];
         if (!fs::exists(output_dir)) {
             fs::create_directory(output_dir);
@@ -195,11 +195,12 @@ public:
 
         cout << "Launching threads to find remove_ptrs in different ranges of ranks ..." << endl;
         auto start_time = chrono::high_resolution_clock::now();
-        vector<vector<U64>> remove_ptrs_by_thread(num_threads);
+        size_t num_parts = num_batches * num_threads;
+        vector<vector<U64>> remove_ptrs_by_part(num_parts);
         U64 start_rank = 0;
         vector<thread> threads;
-        for (size_t t = 0; t < num_threads; t++) {
-            U64 end_rank = shard.tok_cnt * (t + 1) / num_threads;
+        for (size_t p = 0; p < num_parts; p++) {
+            U64 end_rank = shard.tok_cnt * (p + 1) / num_parts;
             // move forward end_rank until end_rank-1 and end_rank do not share prefix of length min_len
             while (true) {
                 if (end_rank >= shard.tok_cnt) {
@@ -215,56 +216,61 @@ public:
                 }
                 end_rank++;
             }
-            threads.emplace_back(&EngineDedup::find_remove_ptrs_thread, this, min_len, t, start_rank, end_rank, output_dir, low_ram ? nullptr : &remove_ptrs_by_thread[t]);
+            threads.emplace_back(&EngineDedup::find_remove_ptrs_thread, this, min_len, p, start_rank, end_rank, output_dir, low_ram ? nullptr : &remove_ptrs_by_part[p]);
             start_rank = end_rank;
-        }
-        for (auto &thread : threads) {
-            thread.join();
-        }
-        vector<pair<U64*, U64>> raw_remove_ptrs_by_thread(num_threads); // {ptr, size in u64}
-        for (size_t t = 0; t < num_threads; t++) {
-            if (low_ram) {
-                auto [ptr, size] = load_file(output_dir + "/remove_ptrs." + to_string(t), false);
-                assert (size % sizeof(U64) == 0);
-                raw_remove_ptrs_by_thread[t] = {reinterpret_cast<U64*>(ptr), size / sizeof(U64)};
-            } else {
-                raw_remove_ptrs_by_thread[t] = {remove_ptrs_by_thread[t].data(), remove_ptrs_by_thread[t].size()};
+            if ((p + 1) % num_threads == 0) {
+                cout << "Batch " << p / num_threads << " starting ..." << endl;
+                for (auto &thread : threads) {
+                    thread.join();
+                }
+                threads.clear();
+                cout << "Batch " << p / num_threads << " done" << endl;
             }
         }
-        size_t total_remove_ptrs = accumulate(raw_remove_ptrs_by_thread.begin(), raw_remove_ptrs_by_thread.end(), 0, [](size_t a, const pair<U64*, U64> &b) { return a + b.second; });
+        vector<pair<U64*, U64>> raw_remove_ptrs_by_part(num_parts); // {ptr, size in u64}
+        for (size_t p = 0; p < num_parts; p++) {
+            if (low_ram) {
+                auto [ptr, size] = load_file(output_dir + "/remove_ptrs." + to_string(p), false);
+                assert (size % sizeof(U64) == 0);
+                raw_remove_ptrs_by_part[p] = {reinterpret_cast<U64*>(ptr), size / sizeof(U64)};
+            } else {
+                raw_remove_ptrs_by_part[p] = {remove_ptrs_by_part[p].data(), remove_ptrs_by_part[p].size()};
+            }
+        }
+        size_t total_remove_ptrs = accumulate(raw_remove_ptrs_by_part.begin(), raw_remove_ptrs_by_part.end(), 0, [](size_t a, const pair<U64*, U64> &b) { return a + b.second; });
         cout << "total_remove_ptrs: " << total_remove_ptrs << endl;
         auto end_time = chrono::high_resolution_clock::now();
         cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
 
         cout << "Merging remove_ptrs into remove_ranges ..." << endl;
         start_time = chrono::high_resolution_clock::now();
-        vector<vector<size_t>> start_by_thread_by_worker(num_threads, vector<size_t>(num_threads));
+        vector<vector<size_t>> start_by_part_by_worker(num_threads, vector<size_t>(num_parts));
         for (size_t w = 0; w < num_threads; w++) {
-            start_by_thread_by_worker[w][0] = raw_remove_ptrs_by_thread[0].second * w / num_threads;
-            U64 anchor = raw_remove_ptrs_by_thread[0].first[start_by_thread_by_worker[w][0]];
-            for (size_t t = 1; t < num_threads; t++) {
-                start_by_thread_by_worker[w][t] = (w == 0) ? 0 : std::lower_bound(raw_remove_ptrs_by_thread[t].first, raw_remove_ptrs_by_thread[t].first + raw_remove_ptrs_by_thread[t].second, anchor) - raw_remove_ptrs_by_thread[t].first;
+            start_by_part_by_worker[w][0] = raw_remove_ptrs_by_part[0].second * w / num_threads;
+            U64 anchor = raw_remove_ptrs_by_part[0].first[start_by_part_by_worker[w][0]];
+            for (size_t p = 1; p < num_parts; p++) {
+                start_by_part_by_worker[w][p] = (w == 0) ? 0 : std::lower_bound(raw_remove_ptrs_by_part[p].first, raw_remove_ptrs_by_part[p].first + raw_remove_ptrs_by_part[p].second, anchor) - raw_remove_ptrs_by_part[p].first;
             }
         }
-        vector<vector<PSS>> start_end_by_thread_by_worker(num_threads, vector<PSS>(num_threads));
+        vector<vector<PSS>> start_end_by_part_by_worker(num_threads, vector<PSS>(num_parts));
         for (size_t w = 0; w < num_threads; w++) {
-            for (size_t t = 0; t < num_threads; t++) {
-                start_end_by_thread_by_worker[w][t].first = start_by_thread_by_worker[w][t];
-                start_end_by_thread_by_worker[w][t].second = (w == num_threads - 1) ? raw_remove_ptrs_by_thread[t].second : start_by_thread_by_worker[w+1][t];
+            for (size_t p = 0; p < num_parts; p++) {
+                start_end_by_part_by_worker[w][p].first = start_by_part_by_worker[w][p];
+                start_end_by_part_by_worker[w][p].second = (w == num_threads - 1) ? raw_remove_ptrs_by_part[p].second : start_by_part_by_worker[w+1][p];
             }
         }
         vector<vector<PSS>> remove_ranges_by_worker(num_threads);
         vector<thread> workers;
         for (size_t w = 0; w < num_threads; w++) {
-            workers.emplace_back(&EngineDedup::merge_ptrs_into_ranges_worker, this, min_len, &raw_remove_ptrs_by_thread, &start_end_by_thread_by_worker[w], &remove_ranges_by_worker[w]);
+            workers.emplace_back(&EngineDedup::merge_ptrs_into_ranges_worker, this, min_len, &raw_remove_ptrs_by_part, &start_end_by_part_by_worker[w], &remove_ranges_by_worker[w]);
         }
         for (auto &worker : workers) {
             worker.join();
         }
         if (low_ram) {
-            for (size_t t = 0; t < num_threads; t++) {
-                munmap(reinterpret_cast<U8*>(raw_remove_ptrs_by_thread[t].first), raw_remove_ptrs_by_thread[t].second * sizeof(U64));
-                fs::remove(output_dir + "/remove_ptrs." + to_string(t));
+            for (size_t p = 0; p < num_parts; p++) {
+                munmap(reinterpret_cast<U8*>(raw_remove_ptrs_by_part[p].first), raw_remove_ptrs_by_part[p].second * sizeof(U64));
+                fs::remove(output_dir + "/remove_ptrs." + to_string(p));
             }
         }
         vector<PSS> remove_ranges;
