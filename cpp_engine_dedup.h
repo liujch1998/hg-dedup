@@ -237,7 +237,7 @@ public:
                 raw_remove_ptrs_by_part[p] = {remove_ptrs_by_part[p].data(), remove_ptrs_by_part[p].size()};
             }
         }
-        size_t total_remove_ptrs = accumulate(raw_remove_ptrs_by_part.begin(), raw_remove_ptrs_by_part.end(), 0, [](size_t a, const pair<U64*, U64> &b) { return a + b.second; });
+        size_t total_remove_ptrs = accumulate(raw_remove_ptrs_by_part.begin(), raw_remove_ptrs_by_part.end(), size_t(0), [](size_t a, const pair<U64*, U64> &b) { return a + b.second; });
         cout << "total_remove_ptrs: " << total_remove_ptrs << endl;
         auto end_time = chrono::high_resolution_clock::now();
         cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;

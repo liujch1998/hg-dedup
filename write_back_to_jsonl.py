@@ -30,7 +30,7 @@ def write_buf():
     abs_path = os.path.join(args.output_dir, curr_path)
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
     if curr_path.endswith(".zst"):
-        cctx = zstd.ZstdCompressor(level=3)
+        cctx = zstd.ZstdCompressor()
         with open(abs_path, "wb") as fout:
             with cctx.stream_writer(fout) as compressor:
                 for buf in curr_bufs:
