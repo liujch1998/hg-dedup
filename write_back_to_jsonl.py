@@ -5,11 +5,13 @@ import os
 import numpy as np
 import gzip
 import zstandard as zstd
+import multiprocessing as mp
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--index_dir", type=str, required=True)
 parser.add_argument("--remove_ranges_path", type=str, default=None)
 parser.add_argument("--output_dir", type=str, required=True)
+parser.add_argument("--num_workers", type=int, default=1)
 args = parser.parse_args()
 
 engine = EngineDedup_U8([args.index_dir], True)
@@ -20,60 +22,92 @@ if args.remove_ranges_path is not None:
     with open(args.remove_ranges_path, "rb") as f:
         remove_ranges = np.frombuffer(f.read(), dtype=np.uint64).reshape(-1, 2)
 
-curr_path = None
-curr_bufs = []
-curr_range_ix = 0
+start_doc_ix_by_worker = []
+start_range_ix_by_worker = []
+for w in range(args.num_workers):
+    start_doc_ix = w * doc_cnt // args.num_workers
+    while True:
+        if start_doc_ix == 0 or start_doc_ix == doc_cnt:
+            break
+        meta_prev = json.loads(engine.get_doc_by_ix(start_doc_ix - 1).metadata)
+        meta_curr = json.loads(engine.get_doc_by_ix(start_doc_ix).metadata)
+        if meta_prev["path"] != meta_curr["path"]:
+            break
+        start_doc_ix += 1
+    start_doc_ix_by_worker.append(start_doc_ix)
 
-def write_buf():
-    global curr_path, curr_bufs
+    start_doc_start_ptr = engine.get_doc_by_ix(start_doc_ix).doc_start_ptr if start_doc_ix < doc_cnt else (2**64-1)
+    # find the first range that starts after start_doc_start_ptr, using binary search
+    start_range_ix = np.searchsorted(remove_ranges[:, 0], start_doc_start_ptr, side='left') # a[i-1] < v <= a[i]
+    start_range_ix_by_worker.append(start_range_ix)
 
-    abs_path = os.path.join(args.output_dir, curr_path)
-    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-    if curr_path.endswith(".zst"):
-        cctx = zstd.ZstdCompressor()
-        with open(abs_path, "wb") as fout:
-            with cctx.stream_writer(fout) as compressor:
+def write_worker(start_doc_ix, end_doc_ix, start_range_ix, end_range_ix):
+
+    print(f"Starting worker with doc_ix [{start_doc_ix}, {end_doc_ix}) and range_ix [{start_range_ix}, {end_range_ix})")
+
+    global engine, remove_ranges, args
+
+    curr_path = None
+    curr_bufs = []
+    curr_range_ix = start_range_ix
+
+    def write_buf(curr_path, curr_bufs):
+
+        abs_path = os.path.join(args.output_dir, curr_path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        if curr_path.endswith(".zst"):
+            cctx = zstd.ZstdCompressor()
+            with open(abs_path, "wb") as fout:
+                with cctx.stream_writer(fout) as compressor:
+                    for buf in curr_bufs:
+                        compressor.write(buf.encode("utf-8"))
+        elif curr_path.endswith(".gz"):
+            with gzip.open(abs_path, "wt", encoding="utf-8") as fout:
                 for buf in curr_bufs:
-                    compressor.write(buf.encode("utf-8"))
-    elif curr_path.endswith(".gz"):
-        with gzip.open(abs_path, "wt", encoding="utf-8") as fout:
-            for buf in curr_bufs:
-                fout.write(buf)
-    else:
-        with open(abs_path, "w") as fout:
-            for buf in curr_bufs:
-                fout.write(buf)
+                    fout.write(buf)
+        else:
+            with open(abs_path, "w") as fout:
+                for buf in curr_bufs:
+                    fout.write(buf)
 
-for doc_ix in range(doc_cnt):
-    doc = engine.get_doc_by_ix(doc_ix)
-    metadata = json.loads(doc.metadata)
-    path, linenum = metadata["path"], metadata["linenum"]
-    if curr_path != path:
-        if curr_path is not None:
-            write_buf()
-            curr_bufs = []
-        curr_path = path
-    meta = metadata["metadata"]
-    token_ids = doc.token_ids
+    for doc_ix in range(start_doc_ix, end_doc_ix):
+        doc = engine.get_doc_by_ix(doc_ix)
+        metadata = json.loads(doc.metadata)
+        path, linenum = metadata["path"], metadata["linenum"]
+        if curr_path != path:
+            if curr_path is not None:
+                write_buf(curr_path, curr_bufs)
+                curr_bufs = []
+            curr_path = path
+        meta = metadata["metadata"]
+        token_ids = doc.token_ids
 
-    removed_bytes = 0
-    while curr_range_ix < remove_ranges.shape[0] and remove_ranges[curr_range_ix, 0] < doc.doc_end_ptr:
-        assert remove_ranges[curr_range_ix, 0] >= doc.doc_start_ptr
-        assert remove_ranges[curr_range_ix, 1] <= doc.doc_end_ptr
-        token_ids = token_ids[:remove_ranges[curr_range_ix, 0] - doc.doc_start_ptr - removed_bytes] + token_ids[remove_ranges[curr_range_ix, 1] - doc.doc_start_ptr - removed_bytes:]
-        removed_bytes += remove_ranges[curr_range_ix, 1] - remove_ranges[curr_range_ix, 0]
-        curr_range_ix += 1
+        removed_bytes = 0
+        while curr_range_ix < remove_ranges.shape[0] and remove_ranges[curr_range_ix, 0] < doc.doc_end_ptr:
+            assert remove_ranges[curr_range_ix, 0] >= doc.doc_start_ptr
+            assert remove_ranges[curr_range_ix, 1] <= doc.doc_end_ptr
+            token_ids = token_ids[:remove_ranges[curr_range_ix, 0] - doc.doc_start_ptr - removed_bytes] + token_ids[remove_ranges[curr_range_ix, 1] - doc.doc_start_ptr - removed_bytes:]
+            removed_bytes += remove_ranges[curr_range_ix, 1] - remove_ranges[curr_range_ix, 0]
+            curr_range_ix += 1
 
-    try:
-        text = bytes(token_ids).decode("utf-8")
-    except UnicodeDecodeError:
-        text = "" # TODO: handle this
-    item = {
-        "text": text,
-    }
-    item = {**item, **meta}
-    curr_bufs.append(json.dumps(item) + "\n")
+        try:
+            text = bytes(token_ids).decode("utf-8")
+        except UnicodeDecodeError:
+            text = "" # TODO: handle this
+        item = {
+            "text": text,
+        }
+        item = {**item, **meta}
+        curr_bufs.append(json.dumps(item) + "\n")
 
-assert curr_range_ix == remove_ranges.shape[0]
-if curr_path is not None:
-    write_buf()
+    assert curr_range_ix == end_range_ix
+    if curr_path is not None:
+        write_buf(curr_path, curr_bufs)
+
+with mp.get_context("fork").Pool(args.num_workers) as p:
+    _ = p.starmap(write_worker, [(
+        start_doc_ix_by_worker[w],
+        start_doc_ix_by_worker[w + 1] if w < args.num_workers - 1 else doc_cnt,
+        start_range_ix_by_worker[w],
+        start_range_ix_by_worker[w + 1] if w < args.num_workers - 1 else remove_ranges.shape[0]
+    ) for w in range(args.num_workers)])
