@@ -86,14 +86,22 @@ def write_worker(start_doc_ix, end_doc_ix, start_range_ix, end_range_ix):
         while curr_range_ix < remove_ranges.shape[0] and remove_ranges[curr_range_ix, 0] < doc.doc_end_ptr:
             assert remove_ranges[curr_range_ix, 0] >= doc.doc_start_ptr
             assert remove_ranges[curr_range_ix, 1] <= doc.doc_end_ptr
-            token_ids = token_ids[:remove_ranges[curr_range_ix, 0] - doc.doc_start_ptr - removed_bytes] + token_ids[remove_ranges[curr_range_ix, 1] - doc.doc_start_ptr - removed_bytes:]
-            removed_bytes += remove_ranges[curr_range_ix, 1] - remove_ranges[curr_range_ix, 0]
+
+            # clip to whole UTF-8 characters
+            s = remove_ranges[curr_range_ix, 0] - doc.doc_start_ptr - removed_bytes
+            e = remove_ranges[curr_range_ix, 1] - doc.doc_start_ptr - removed_bytes
+            while s < len(token_ids) and 128 <= token_ids[s] < 192:
+                s += 1
+            if e != len(token_ids):
+                while e >= 0 and 128 <= token_ids[e] < 192:
+                    e -= 1
+            assert s <= e
+
+            token_ids = token_ids[:s] + token_ids[e:]
+            removed_bytes += e - s
             curr_range_ix += 1
 
-        try:
-            text = bytes(token_ids).decode("utf-8")
-        except UnicodeDecodeError:
-            text = "" # TODO: handle this
+        text = bytes(token_ids).decode("utf-8")
         item = {
             "text": text,
         }
