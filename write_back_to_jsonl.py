@@ -22,9 +22,10 @@ if args.remove_ranges_path is not None:
     with open(args.remove_ranges_path, "rb") as f:
         remove_ranges = np.frombuffer(f.read(), dtype=np.uint64).reshape(-1, 2)
 
-start_doc_ix_by_worker = []
-start_range_ix_by_worker = []
-for w in range(args.num_workers):
+def find_start_worker(w):
+
+    global args, engine, doc_cnt, remove_ranges
+
     start_doc_ix = w * doc_cnt // args.num_workers
     while True:
         if start_doc_ix == 0 or start_doc_ix == doc_cnt:
@@ -34,18 +35,23 @@ for w in range(args.num_workers):
         if meta_prev["path"] != meta_curr["path"]:
             break
         start_doc_ix += 1
-    start_doc_ix_by_worker.append(start_doc_ix)
 
     start_doc_start_ptr = engine.get_doc_by_ix(start_doc_ix).doc_start_ptr if start_doc_ix < doc_cnt else (2**64-1)
     # find the first range that starts after start_doc_start_ptr, using binary search
     start_range_ix = np.searchsorted(remove_ranges[:, 0], start_doc_start_ptr, side='left') # a[i-1] < v <= a[i]
-    start_range_ix_by_worker.append(start_range_ix)
 
-def write_worker(start_doc_ix, end_doc_ix, start_range_ix, end_range_ix):
+    return start_doc_ix, start_range_ix
 
-    print(f"Starting worker with doc_ix [{start_doc_ix}, {end_doc_ix}) and range_ix [{start_range_ix}, {end_range_ix})")
+with mp.get_context("fork").Pool(args.num_workers) as p:
+    results = p.map(find_start_worker, range(args.num_workers))
+    start_doc_ix_by_worker = [r[0] for r in results]
+    start_range_ix_by_worker = [r[1] for r in results]
 
-    global engine, remove_ranges, args
+def write_worker(w, start_doc_ix, end_doc_ix, start_range_ix, end_range_ix):
+
+    print(f"Starting worker {w} with doc_ix [{start_doc_ix}, {end_doc_ix}) and range_ix [{start_range_ix}, {end_range_ix})")
+
+    global args, engine, remove_ranges
 
     curr_path = None
     curr_bufs = []
@@ -114,8 +120,9 @@ def write_worker(start_doc_ix, end_doc_ix, start_range_ix, end_range_ix):
 
 with mp.get_context("fork").Pool(args.num_workers) as p:
     _ = p.starmap(write_worker, [(
+        w,
         start_doc_ix_by_worker[w],
         start_doc_ix_by_worker[w + 1] if w < args.num_workers - 1 else doc_cnt,
         start_range_ix_by_worker[w],
-        start_range_ix_by_worker[w + 1] if w < args.num_workers - 1 else remove_ranges.shape[0]
+        start_range_ix_by_worker[w + 1] if w < args.num_workers - 1 else remove_ranges.shape[0],
     ) for w in range(args.num_workers)])
