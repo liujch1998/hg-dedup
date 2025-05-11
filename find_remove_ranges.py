@@ -4,17 +4,17 @@ import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--index_dir", type=str, required=True)
-parser.add_argument("--min_len", type=int, required=True)
+parser.add_argument("--minlen", type=int, required=True)
 parser.add_argument("--num_threads", type=int, required=True)
 parser.add_argument("--low_ram", default=False, action="store_true")
 parser.add_argument("--num_batches", type=int, required=True)
 args = parser.parse_args()
 
-output_dir = os.path.join(args.index_dir, f"dedup_minlen{args.min_len}")
+output_dir = os.path.join(args.index_dir, f"dedup_minlen{args.minlen}")
 
 engine = EngineDedup_U8([args.index_dir], False)
 engine.find_remove_ranges_parallel(
-    min_len=args.min_len,
+    min_len=args.minlen,
     num_threads=args.num_threads,
     output_dir=output_dir,
     low_ram=args.low_ram,

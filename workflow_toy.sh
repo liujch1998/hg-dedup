@@ -8,7 +8,7 @@ python -m infini_gram.indexing \
 
 python find_remove_ranges.py \
     --index_dir /data/jiachengl/hg-dedup/index/v4_toy_u8 \
-    --min_len 32 \
+    --minlen 32 \
     --num_threads 1 \
     --low_ram \
     --num_batches 1
