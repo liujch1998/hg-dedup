@@ -20,5 +20,6 @@ PYBIND11_MODULE(cpp_engine_dedup, m) {
     py::class_<EngineDedup<U8>>(m, "EngineDedup_U8")
         .def(py::init<const vector<string>, const bool>())
         .def("get_total_doc_cnt", &EngineDedup<U8>::get_total_doc_cnt)
-        .def("get_doc_by_ix", &EngineDedup<U8>::get_doc_by_ix);
+        .def("get_doc_by_ix", &EngineDedup<U8>::get_doc_by_ix, "doc_ix"_a)
+        .def("find_remove_ranges_parallel", &EngineDedup<U8>::find_remove_ranges_parallel, "min_len"_a, "num_threads"_a, "output_dir"_a, "low_ram"_a, "num_batches"_a);
 }
