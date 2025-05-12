@@ -46,11 +46,6 @@ def find_start_worker(w):
 
     return start_doc_ix, start_range_ix
 
-with mp.get_context("fork").Pool(args.num_workers) as p:
-    results = p.map(find_start_worker, range(args.num_workers))
-    start_doc_ix_by_worker = [r[0] for r in results]
-    start_range_ix_by_worker = [r[1] for r in results]
-
 def write_worker(w, start_doc_ix, end_doc_ix, start_range_ix, end_range_ix):
 
     print(f"Starting worker {w} with doc_ix [{start_doc_ix}, {end_doc_ix}) and range_ix [{start_range_ix}, {end_range_ix})")
@@ -133,6 +128,11 @@ def write_worker(w, start_doc_ix, end_doc_ix, start_range_ix, end_range_ix):
     return kept_in_the_middle_lengths
 
 with mp.get_context("fork").Pool(args.num_workers) as p:
+
+    results = p.map(find_start_worker, range(args.num_workers))
+    start_doc_ix_by_worker = [r[0] for r in results]
+    start_range_ix_by_worker = [r[1] for r in results]
+
     kept_in_the_middle_lengths_by_worker = p.starmap(write_worker, [(
         w,
         start_doc_ix_by_worker[w],
@@ -141,10 +141,11 @@ with mp.get_context("fork").Pool(args.num_workers) as p:
         start_range_ix_by_worker[w + 1] if w < args.num_workers - 1 else remove_ranges.shape[0],
     ) for w in range(args.num_workers)])
 
-# collect and write kept_in_the_middle_lengths
-kept_in_the_middle_lengths = sorted(sum(kept_in_the_middle_lengths_by_worker, []))
-if args.minlen is not None:
-    kept_in_the_middle_lengths_path = os.path.join(args.index_dir, f"dedup_minlen{args.minlen}", "kept_in_the_middle_lengths.txt")
-    with open(kept_in_the_middle_lengths_path, "w") as f:
-        for length in kept_in_the_middle_lengths:
-            f.write(f"{length}\n")
+    # collect and write kept_in_the_middle_lengths
+    kept_in_the_middle_lengths = sorted(sum(kept_in_the_middle_lengths_by_worker, []))
+    if args.minlen is not None:
+        kept_in_the_middle_lengths_path = os.path.join(args.index_dir, f"dedup_minlen{args.minlen}", "kept_in_the_middle_lengths.txt")
+        with open(kept_in_the_middle_lengths_path, "w") as f:
+            for length in kept_in_the_middle_lengths:
+                f.write(f"{length}\n")
+

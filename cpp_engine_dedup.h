@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstdint> // for uint64_t
+#include <cstdio>
 #include <cstring> // for memcpy
 #include <iostream>
 #include <map>
@@ -152,14 +153,69 @@ public:
 
     pair<U8*, U64> load_file(const string &path, const bool load_to_ram) const {
         if (load_to_ram) {
+            /*
             ifstream f(path, ios::binary);
             assert (f.is_open());
+            char* buffer = new char[1024 * 1024 * 1024];
+            f.rdbuf()->pubsetbuf(buffer, 1024 * 1024 * 1024);
             f.seekg(0, ios::end);
             U64 size = f.tellg();
             f.seekg(0, ios::beg);
             U8 *buf = new U8[size];
             f.read(reinterpret_cast<char*>(buf), size);
             f.close();
+            return {buf, size};
+            */
+            /*
+            FILE *f = std::fopen(path.c_str(), "rb");
+            setvbuf(f, nullptr, _IOFBF, 1024 * 1024 * 1024);
+            std::fseek(f, 0, SEEK_END);
+            size_t size = std::ftell(f);
+            std::rewind(f);
+            U8 *buf = new U8[size];
+            std::fread((char*)buf, 1, size, f);
+            std::fclose(f);
+            return {buf, size};
+            */
+            /*
+            int fd = open(path.c_str(), O_RDONLY); // | O_DIRECT);
+            assert (fd != -1);
+            struct stat st;
+            fstat(fd, &st);
+            size_t size = st.st_size;
+            U8 *buf = new U8[size];
+            size_t total_bytes_read = 0;
+            while (total_bytes_read < size) {
+                ssize_t r = read(fd, (char*)buf + total_bytes_read, size - total_bytes_read);
+                assert (r > 0);
+                total_bytes_read += r;
+            }
+            close(fd);
+            return {buf, size};
+            */
+            int fd = open(path.c_str(), O_RDONLY);
+            assert (fd != -1);
+            struct stat st;
+            fstat(fd, &st);
+            size_t size = st.st_size;
+            U8 *buf = new U8[size];
+            size_t num_threads = 16;
+            size_t chunk_size = (size + num_threads - 1) / num_threads;
+            vector<thread> threads;
+            for (size_t i = 0; i < num_threads; i++) {
+                threads.emplace_back([&, i]() {
+                    size_t offset = i * chunk_size;
+                    size_t to_read = min(chunk_size, size - offset);
+                    while (to_read > 0) {
+                        ssize_t r = pread(fd, (char*)buf + offset, to_read, offset);
+                        assert (r > 0);
+                        offset += r;
+                        to_read -= r;
+                    }
+                });
+            }
+            for (auto &t : threads) t.join();
+            close(fd);
             return {buf, size};
         } else {
             int f = open(path.c_str(), O_RDONLY);
@@ -283,11 +339,13 @@ public:
                 }
             }
         }
+        U64 total_removed_bytes = accumulate(remove_ranges.begin(), remove_ranges.end(), U64(0), [](U64 a, const PSS &b) { return a + b.second - b.first; });
         string filename = output_dir + "/remove_ranges";
         ofstream fout(filename, ios::binary);
         fout.write(reinterpret_cast<const char*>(remove_ranges.data()), remove_ranges.size() * sizeof(PSS));
         fout.close();
         cout << "remove_ranges.size(): " << remove_ranges.size() << endl;
+        cout << "total_removed_bytes: " << total_removed_bytes << endl;
         end_time = chrono::high_resolution_clock::now();
         cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
     }

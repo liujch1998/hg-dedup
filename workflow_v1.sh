@@ -32,6 +32,6 @@ time python write_back_to_jsonl.py \
     --index_dir /data/${INDEX_NAME} \
     --minlen ${MINLEN} \
     --output_dir /data/${NAME}_minlen${MINLEN} \
-    --num_workers 128
+    --num_workers 16
 
 aws s3 cp --recursive /data/${NAME}_minlen${MINLEN} s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/minhash_suffarr/minhash_suffarr_minlen${MINLEN}
