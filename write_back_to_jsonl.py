@@ -117,7 +117,7 @@ def write_worker(w, start_doc_ix, end_doc_ix, start_range_ix, end_range_ix):
             "text": text,
         }
         if args.mode == "annotate":
-            item["sa_keep_ranges"] = doc_keep_ranges
+            item["sa_remove_ranges"] = doc_remove_ranges
         item = {**item, **meta}
         curr_bufs.append(json.dumps(item) + "\n")
 
