@@ -22,5 +22,5 @@ PYBIND11_MODULE(cpp_engine_dedup, m) {
         .def("get_total_doc_cnt", &EngineDedup<U8>::get_total_doc_cnt)
         .def("get_doc_by_ix", &EngineDedup<U8>::get_doc_by_ix, "doc_ix"_a)
         .def("find_remove_ranges", &EngineDedup<U8>::find_remove_ranges, "min_len"_a, "num_threads"_a, "low_ram"_a, "num_batches"_a)
-        .def("find_remove_ranges_sharded", &EngineDedup<U8>::find_remove_ranges_sharded, "min_len"_a, "hack"_a, "num_threads"_a, "low_ram"_a, "num_batches"_a);
+        .def("find_remove_ranges_sharded", &EngineDedup<U8>::find_remove_ranges_sharded, "min_len"_a, "num_threads"_a, "low_ram"_a, "num_batches"_a);
 }
