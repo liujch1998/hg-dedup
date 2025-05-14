@@ -15,6 +15,7 @@ python -m indexing_v6_sharded.py \
 python find_remove_ranges.py \
     --index_dir /data/${INDEX_NAME} \
     --minlen ${MINLEN} \
+    --mode parallel_sharded \
     --num_threads 128 \
     --low_ram \
     --num_batches 2

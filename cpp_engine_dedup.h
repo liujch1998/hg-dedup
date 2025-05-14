@@ -214,7 +214,7 @@ public:
         }
     }
 
-    void find_remove_ranges(const size_t min_len, const size_t num_threads, const bool low_ram, const size_t num_batches) const {
+    void find_remove_ranges_parallel(const size_t min_len, const size_t num_threads, const bool low_ram, const size_t num_batches) const {
 
         const auto &shard = _shards[0];
         string output_dir = _index_dirs[0] + "/dedup_minlen" + to_string(min_len);
@@ -407,7 +407,7 @@ public:
         }
     }
 
-    void find_remove_ranges_sharded(const size_t min_len, const size_t num_threads, const bool low_ram, const size_t num_batches) const {
+    void find_remove_ranges_parallel_sharded(const size_t min_len, const size_t num_threads, const bool low_ram, const size_t num_batches) const {
 
         for (size_t s = 0; s < _num_shards; s++) {
             string output_dir = _index_dirs[s] + "/dedup_minlen" + to_string(min_len);

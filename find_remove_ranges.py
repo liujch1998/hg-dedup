@@ -7,27 +7,29 @@ import resource
 parser = argparse.ArgumentParser()
 parser.add_argument("--index_dir", type=str, required=True)
 parser.add_argument("--minlen", type=int, required=True)
-parser.add_argument("--num_threads", type=int, required=True)
+parser.add_argument("--mode", default="parallel", choices=["parallel", "parallel_sharded"])
+parser.add_argument("--num_threads", type=int, default=1)
 parser.add_argument("--low_ram", default=False, action="store_true")
-parser.add_argument("--num_batches", type=int, required=True)
+parser.add_argument("--num_batches", type=int, default=1)
 parser.add_argument("--ulimit", type=int, default=524288)
 args = parser.parse_args()
 
 resource.setrlimit(resource.RLIMIT_NOFILE, (args.ulimit, args.ulimit))
 
-# engine = EngineDedup_U8([args.index_dir], False)
-# engine.find_remove_ranges(
-#     min_len=args.minlen,
-#     num_threads=args.num_threads,
-#     low_ram=args.low_ram,
-#     num_batches=args.num_batches,
-# )
-
-index_dirs = glob.glob(os.path.join(args.index_dir, "*"))
-engine = EngineDedup_U8(index_dirs, False)
-engine.find_remove_ranges_sharded(
-    min_len=args.minlen,
-    num_threads=args.num_threads,
-    low_ram=args.low_ram,
-    num_batches=args.num_batches,
-)
+if args.mode == "parallel":
+    engine = EngineDedup_U8([args.index_dir], False)
+    engine.find_remove_ranges_parallel(
+        min_len=args.minlen,
+        num_threads=args.num_threads,
+        low_ram=args.low_ram,
+        num_batches=args.num_batches,
+    )
+elif args.mode == "parallel_sharded":
+    index_dirs = glob.glob(os.path.join(args.index_dir, "*"))
+    engine = EngineDedup_U8(index_dirs, False)
+    engine.find_remove_ranges_parallel_sharded(
+        min_len=args.minlen,
+        num_threads=args.num_threads,
+        low_ram=args.low_ram,
+        num_batches=args.num_batches,
+    )

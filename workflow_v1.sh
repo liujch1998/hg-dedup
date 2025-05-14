@@ -24,6 +24,7 @@ python -m infini_gram.indexing \
 python find_remove_ranges.py \
     --index_dir /data/${INDEX_NAME} \
     --minlen ${MINLEN} \
+    --mode parallel \
     --num_threads 128 \
     --low_ram \
     --num_batches 2
