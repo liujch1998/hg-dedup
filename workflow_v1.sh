@@ -4,7 +4,7 @@ export MINLEN="200"
 
 aws s3 cp --recursive s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/minhash_suffarr/minhash_only/ /data/${NAME}/
 
-python -m infini_gram.indexing_v6 \
+python -m infini_gram.indexing \
     --data_dir /data/${NAME} \
     --save_dir /data/${INDEX_NAME} \
     --token_dtype u8 \

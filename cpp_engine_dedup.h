@@ -74,7 +74,7 @@ public:
 
     EngineDedup(
         const vector<string> index_dirs, const bool load_metadata)
-        : _doc_sep_id((T)(-1)), _doc_sep(vector<U8>(sizeof(T), 0xff))
+        : _doc_sep_id((T)(-1)), _doc_sep(vector<U8>(sizeof(T), 0xff)), _index_dirs(index_dirs)
     {
 
         assert_little_endian();
@@ -82,57 +82,28 @@ public:
         for (const auto &index_dir : index_dirs) {
             assert (fs::exists(index_dir));
 
-            vector<string> ds_paths, sa_paths, od_paths, mt_paths, om_paths, ug_paths;
-            for (const auto &entry : fs::directory_iterator(index_dir)) {
-                if (entry.path().string().find("tokenized") != string::npos) {
-                    ds_paths.push_back(entry.path());
-                } else if (entry.path().string().find("table") != string::npos) {
-                    sa_paths.push_back(entry.path());
-                } else if (entry.path().string().find("offset") != string::npos) {
-                    od_paths.push_back(entry.path());
-                } else if (entry.path().string().find("metadata") != string::npos) {
-                    mt_paths.push_back(entry.path());
-                } else if (entry.path().string().find("metaoff") != string::npos) {
-                    om_paths.push_back(entry.path());
-                } else if (entry.path().string().find("unigram") != string::npos) {
-                    ug_paths.push_back(entry.path());
-                }
-            }
-            sort(ds_paths.begin(), ds_paths.end());
-            sort(sa_paths.begin(), sa_paths.end());
-            sort(od_paths.begin(), od_paths.end());
-            sort(mt_paths.begin(), mt_paths.end());
-            sort(om_paths.begin(), om_paths.end());
-            assert (sa_paths.size() == ds_paths.size());
-            assert (od_paths.size() == ds_paths.size());
-            assert (mt_paths.size() == 0 || mt_paths.size() == ds_paths.size());
-            assert (om_paths.size() == mt_paths.size());
-            assert (ug_paths.size() == 0 || ug_paths.size() == ds_paths.size());
+            auto [ds, ds_size] = load_file(index_dir + "/tokenized", true);
+            auto [sa, sa_size] = load_file(index_dir + "/table", false);
+            auto [od, od_size] = load_file(index_dir + "/offset", true);
 
-            for (size_t s = 0; s < ds_paths.size(); s++) {
-                auto [ds, ds_size] = load_file(ds_paths[s], true);
-                auto [sa, sa_size] = load_file(sa_paths[s], false);
-                auto [od, od_size] = load_file(od_paths[s], true);
+            assert (ds_size % sizeof(T) == 0);
+            U64 tok_cnt = ds_size / sizeof(T);
+            assert (sa_size % tok_cnt == 0);
+            U8 ptr_size = (U8)(sa_size / tok_cnt);
+            assert (od_size % sizeof(U64) == 0);
+            U64 doc_cnt = od_size / sizeof(U64);
 
-                assert (ds_size % sizeof(T) == 0);
-                U64 tok_cnt = ds_size / sizeof(T);
-                assert (sa_size % tok_cnt == 0);
-                U8 ptr_size = (U8)(sa_size / tok_cnt);
-                assert (od_size % sizeof(U64) == 0);
-                U64 doc_cnt = od_size / sizeof(U64);
+            if (!load_metadata) {
+                auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt};
+                _shards.push_back(shard);
+            } else {
+                auto [mt, mt_size] = load_file(index_dir + "/metadata", true);
+                auto [om, om_size] = load_file(index_dir + "/metaoff", true);
 
-                if (!load_metadata || mt_paths.size() == 0) {
-                    auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt};
-                    _shards.push_back(shard);
-                } else {
-                    auto [mt, mt_size] = load_file(mt_paths[s], true);
-                    auto [om, om_size] = load_file(om_paths[s], true);
+                assert (om_size == doc_cnt * sizeof(U64));
 
-                    assert (om_size == doc_cnt * sizeof(U64));
-
-                    auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt, mt, mt_size, om};
-                    _shards.push_back(shard);
-                }
+                auto shard = DatastoreShard{ds, sa, tok_cnt, ds_size, ptr_size, od, doc_cnt, mt, mt_size, om};
+                _shards.push_back(shard);
             }
         }
 
@@ -223,6 +194,10 @@ public:
             struct stat s;
             auto fstat_ret = fstat(f, &s);
             assert (fstat_ret != -1);
+            if (s.st_size == 0) {
+                close(f);
+                return {nullptr, 0};
+            }
             U8 *ptr = static_cast<U8*>(mmap(NULL, s.st_size, PROT_READ, MAP_PRIVATE, f, 0));
             assert (ptr != MAP_FAILED);
             // madvise(ptr, s.st_size, MADV_SEQUENTIAL);
@@ -239,11 +214,14 @@ public:
         }
     }
 
-    void find_remove_ranges_parallel(const size_t min_len, const size_t num_threads, const string output_dir, const bool low_ram, const size_t num_batches) const {
+    void find_remove_ranges(const size_t min_len, const size_t num_threads, const bool low_ram, const size_t num_batches) const {
+
         const auto &shard = _shards[0];
+        string output_dir = _index_dirs[0] + "/dedup_minlen" + to_string(min_len);
         if (!fs::exists(output_dir)) {
             fs::create_directory(output_dir);
         }
+        vector<thread> threads;
 
         // This function: do not write parts to disk. Requires more RAM, less disk swap space, and faster
         // To save some RAM: write parts to disk and mmap back. Requires less RAM, more disk swap space, and slower
@@ -254,7 +232,6 @@ public:
         size_t num_parts = num_batches * num_threads;
         vector<vector<U64>> remove_ptrs_by_part(num_parts);
         U64 start_rank = 0;
-        vector<thread> threads;
         for (size_t p = 0; p < num_parts; p++) {
             U64 end_rank = shard.tok_cnt * (p + 1) / num_parts;
             // move forward end_rank until end_rank-1 and end_rank do not share prefix of length min_len
@@ -272,7 +249,7 @@ public:
                 }
                 end_rank++;
             }
-            threads.emplace_back(&EngineDedup::find_remove_ptrs_thread, this, min_len, p, start_rank, end_rank, output_dir, low_ram ? nullptr : &remove_ptrs_by_part[p]);
+            threads.emplace_back(&EngineDedup::find_remove_ptrs_part, this, min_len, p, start_rank, end_rank, low_ram ? nullptr : &remove_ptrs_by_part[p]);
             start_rank = end_rank;
             if ((p + 1) % num_threads == 0) {
                 cout << "Batch " << p / num_threads << " starting ..." << endl;
@@ -286,7 +263,7 @@ public:
         vector<pair<U64*, U64>> raw_remove_ptrs_by_part(num_parts); // {ptr, size in u64}
         for (size_t p = 0; p < num_parts; p++) {
             if (low_ram) {
-                auto [ptr, size] = load_file(output_dir + "/remove_ptrs." + to_string(p), false);
+                auto [ptr, size] = load_file(_index_dirs[0] + "/dedup_minlen" + to_string(min_len) + "/remove_ptrs." + to_string(p), false);
                 assert (size % sizeof(U64) == 0);
                 raw_remove_ptrs_by_part[p] = {reinterpret_cast<U64*>(ptr), size / sizeof(U64)};
             } else {
@@ -300,37 +277,37 @@ public:
 
         cout << "Merging remove_ptrs into remove_ranges ..." << endl;
         start_time = chrono::high_resolution_clock::now();
-        vector<vector<size_t>> start_by_part_by_worker(num_threads, vector<size_t>(num_parts));
-        for (size_t w = 0; w < num_threads; w++) {
-            start_by_part_by_worker[w][0] = raw_remove_ptrs_by_part[0].second * w / num_threads;
+        size_t num_workers = num_threads;
+        vector<vector<size_t>> start_by_part_by_worker(num_workers, vector<size_t>(num_parts));
+        for (size_t w = 0; w < num_workers; w++) {
+            start_by_part_by_worker[w][0] = raw_remove_ptrs_by_part[0].second * w / num_workers;
             U64 anchor = raw_remove_ptrs_by_part[0].first[start_by_part_by_worker[w][0]];
             for (size_t p = 1; p < num_parts; p++) {
                 start_by_part_by_worker[w][p] = (w == 0) ? 0 : std::lower_bound(raw_remove_ptrs_by_part[p].first, raw_remove_ptrs_by_part[p].first + raw_remove_ptrs_by_part[p].second, anchor) - raw_remove_ptrs_by_part[p].first;
             }
         }
-        vector<vector<PSS>> start_end_by_part_by_worker(num_threads, vector<PSS>(num_parts));
-        for (size_t w = 0; w < num_threads; w++) {
+        vector<vector<PSS>> start_end_by_part_by_worker(num_workers, vector<PSS>(num_parts));
+        for (size_t w = 0; w < num_workers; w++) {
             for (size_t p = 0; p < num_parts; p++) {
                 start_end_by_part_by_worker[w][p].first = start_by_part_by_worker[w][p];
-                start_end_by_part_by_worker[w][p].second = (w == num_threads - 1) ? raw_remove_ptrs_by_part[p].second : start_by_part_by_worker[w+1][p];
+                start_end_by_part_by_worker[w][p].second = (w == num_workers - 1) ? raw_remove_ptrs_by_part[p].second : start_by_part_by_worker[w+1][p];
             }
         }
-        vector<vector<PSS>> remove_ranges_by_worker(num_threads);
-        vector<thread> workers;
-        for (size_t w = 0; w < num_threads; w++) {
-            workers.emplace_back(&EngineDedup::merge_ptrs_into_ranges_worker, this, min_len, &raw_remove_ptrs_by_part, &start_end_by_part_by_worker[w], &remove_ranges_by_worker[w]);
+        vector<vector<PSS>> remove_ranges_by_worker(num_workers);
+        for (size_t w = 0; w < num_workers; w++) {
+            threads.emplace_back(&EngineDedup::merge_ptrs_into_ranges_worker, this, min_len, &raw_remove_ptrs_by_part, &start_end_by_part_by_worker[w], &remove_ranges_by_worker[w]);
         }
-        for (auto &worker : workers) {
-            worker.join();
+        for (auto &thread : threads) {
+            thread.join();
         }
         if (low_ram) {
             for (size_t p = 0; p < num_parts; p++) {
                 munmap(reinterpret_cast<U8*>(raw_remove_ptrs_by_part[p].first), raw_remove_ptrs_by_part[p].second * sizeof(U64));
-                fs::remove(output_dir + "/remove_ptrs." + to_string(p));
+                fs::remove(_index_dirs[0] + "/dedup_minlen" + to_string(min_len) + "/remove_ptrs." + to_string(p));
             }
         }
         vector<PSS> remove_ranges;
-        for (size_t w = 0; w < num_threads; w++) {
+        for (size_t w = 0; w < num_workers; w++) {
             for (size_t i = 0; i < remove_ranges_by_worker[w].size(); i++) {
                 if (i == 0 && remove_ranges.size() > 0 && remove_ranges.back().second >= remove_ranges_by_worker[w][i].first) { // should merge these ranges
                     remove_ranges.back().second = remove_ranges_by_worker[w][i].second;
@@ -339,26 +316,26 @@ public:
                 }
             }
         }
-        U64 total_removed_bytes = accumulate(remove_ranges.begin(), remove_ranges.end(), U64(0), [](U64 a, const PSS &b) { return a + b.second - b.first; });
-        string filename = output_dir + "/remove_ranges";
+        U64 total_remove_bytes = accumulate(remove_ranges.begin(), remove_ranges.end(), U64(0), [](U64 a, const PSS &b) { return a + b.second - b.first; });
+        string filename = _index_dirs[0] + "/dedup_minlen" + to_string(min_len) + "/remove_ranges";
         ofstream fout(filename, ios::binary);
         fout.write(reinterpret_cast<const char*>(remove_ranges.data()), remove_ranges.size() * sizeof(PSS));
         fout.close();
-        cout << "remove_ranges.size(): " << remove_ranges.size() << endl;
-        cout << "total_removed_bytes: " << total_removed_bytes << endl;
+        cout << "total_remove_ranges: " << remove_ranges.size() << endl;
+        cout << "total_remove_bytes: " << total_remove_bytes << endl;
         end_time = chrono::high_resolution_clock::now();
         cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
     }
 
-    void find_remove_ptrs_thread(const size_t min_len, const size_t t, const U64 start_rank, const U64 end_rank, const string output_dir, vector<U64>* const out_remove_ptrs) const {
+    void find_remove_ptrs_part(const size_t min_len, const size_t p, const U64 start_rank, const U64 end_rank, vector<U64>* const out_remove_ptrs) const {
 
         const auto &shard = _shards[0];
 
         vector<U64> remove_ptrs;
         vector<U64> ptrs{_convert_rank_to_ptr(shard, start_rank)};
         for (U64 rank = start_rank + 1; rank < end_rank; rank++) {
-            if (t == 0 && rank % 100000000 == 0) {
-                cout << "Thread 0 processing rank " << rank << " / " << end_rank << ", remove_ptrs.size(): " << remove_ptrs.size() << endl;
+            if (p == 0 && rank % 100000000 == 0) {
+                cout << "Part 0 processing rank " << rank << " / " << end_rank << ", remove_ptrs.size(): " << remove_ptrs.size() << endl;
             }
 
             // if rank-1 and rank share prefix of length min_len, keep moving
@@ -391,42 +368,308 @@ public:
         if (out_remove_ptrs) { // return remove_ptrs to the caller
             *out_remove_ptrs = move(remove_ptrs);
         } else { // write remove_ptrs to a binary file
-            string filename = output_dir + "/remove_ptrs." + to_string(t);
+            string filename = _index_dirs[0] + "/dedup_minlen" + to_string(min_len) + "/remove_ptrs." + to_string(p);
             ofstream fout(filename, ios::binary);
             fout.write(reinterpret_cast<const char*>(remove_ptrs.data()), remove_ptrs.size() * sizeof(U64));
             fout.close();
         }
 
-        if (t == 0) {
-            cout << "Thread 0 done, remove_ptrs.size(): " << remove_ptrs_size << endl;
+        if (p == 0) {
+            cout << "Part 0 done, remove_ptrs.size(): " << remove_ptrs_size << endl;
         }
     }
 
-    void merge_ptrs_into_ranges_worker(const size_t min_len, const vector<pair<U64*, U64>>* const raw_remove_ptrs_by_thread, const vector<PSS>* const start_end_by_thread, vector<PSS>* const remove_ranges) const {
+    void merge_ptrs_into_ranges_worker(const size_t min_len, const vector<pair<U64*, U64>>* const raw_remove_ptrs_by_part, const vector<PSS>* const start_end_by_part, vector<PSS>* const remove_ranges) const {
+
         using HeapElement = pair<U64, size_t>;
         priority_queue<HeapElement, vector<HeapElement>, greater<HeapElement>> min_heap;
-        size_t num_threads = raw_remove_ptrs_by_thread->size();
-        vector<size_t> ptr_by_thread(num_threads, 0);
-        for (size_t t = 0; t < num_threads; t++) {
-            ptr_by_thread[t] = (*start_end_by_thread)[t].first;
-            if (ptr_by_thread[t] < (*start_end_by_thread)[t].second) {
-                min_heap.push({(*raw_remove_ptrs_by_thread)[t].first[ptr_by_thread[t]], t});
-                ptr_by_thread[t]++;
+        size_t num_parts = raw_remove_ptrs_by_part->size();
+        vector<size_t> ptr_by_part(num_parts, 0);
+        for (size_t p = 0; p < num_parts; p++) {
+            ptr_by_part[p] = (*start_end_by_part)[p].first;
+            if (ptr_by_part[p] < (*start_end_by_part)[p].second) {
+                min_heap.push({(*raw_remove_ptrs_by_part)[p].first[ptr_by_part[p]], p});
+                ptr_by_part[p]++;
             }
         }
         while (!min_heap.empty()) {
-            auto [ptr, t] = min_heap.top();
+            auto [ptr, p] = min_heap.top();
             min_heap.pop();
             if (remove_ranges->size() > 0 && remove_ranges->back().second >= ptr) {
                 remove_ranges->back().second = ptr + min_len * sizeof(T);
             } else {
                 remove_ranges->push_back({ptr, ptr + min_len * sizeof(T)});
             }
-            if (ptr_by_thread[t] < (*start_end_by_thread)[t].second) {
-                min_heap.push({(*raw_remove_ptrs_by_thread)[t].first[ptr_by_thread[t]], t});
-                ptr_by_thread[t]++;
+            if (ptr_by_part[p] < (*start_end_by_part)[p].second) {
+                min_heap.push({(*raw_remove_ptrs_by_part)[p].first[ptr_by_part[p]], p});
+                ptr_by_part[p]++;
             }
         }
+    }
+
+    void find_remove_ranges_sharded(const size_t min_len, const size_t hack, const size_t num_threads, const bool low_ram, const size_t num_batches) const {
+
+        for (size_t s = 0; s < _num_shards; s++) {
+            string output_dir = _index_dirs[s] + "/dedup_minlen" + to_string(min_len) + "_hack" + to_string(hack);
+            if (!fs::exists(output_dir)) {
+                fs::create_directory(output_dir);
+            }
+        }
+        vector<thread> threads;
+
+        // This function: do not write parts to disk. Requires more RAM, less disk swap space, and faster
+        // To save some RAM: write parts to disk and mmap back. Requires less RAM, more disk swap space, and slower
+        // To save more RAM: mmap the text file. Requires less RAM, and slower
+
+        cout << "Launching threads to find remove_ptrs in different ranges of ranks ..." << endl;
+        auto start_time = chrono::high_resolution_clock::now();
+        size_t num_parts = num_batches * num_threads;
+        vector<vector<vector<U64>>> remove_ptrs_by_shard_by_part(num_parts, vector<vector<U64>>(_num_shards));
+        vector<vector<U64>> start_rank_by_shard_by_part(num_parts, vector<U64>(_num_shards));
+        for (size_t p = 0; p < num_parts; p++) {
+            threads.emplace_back(&EngineDedup::partition_sharded, this, min_len, p, num_parts, &start_rank_by_shard_by_part[p]);
+        }
+        for (auto &thread : threads) {
+            thread.join();
+        }
+        threads.clear();
+        vector<vector<pair<U64, U64>>> start_end_rank_by_shard_by_part(num_parts, vector<pair<U64, U64>>(_num_shards));
+        for (size_t p = 0; p < num_parts; p++) {
+            for (size_t s = 0; s < _num_shards; s++) {
+                start_end_rank_by_shard_by_part[p][s].first = start_rank_by_shard_by_part[p][s];
+                start_end_rank_by_shard_by_part[p][s].second = (p == num_parts - 1) ? _shards[s].tok_cnt : start_rank_by_shard_by_part[p+1][s];
+            }
+        }
+        auto end_time = chrono::high_resolution_clock::now();
+        cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
+
+        cout << "Finding remove_ptrs in different parts ..." << endl;
+        start_time = chrono::high_resolution_clock::now();
+        // the actual heavy lifting
+        for (size_t p = 0; p < num_parts; p++) {
+            threads.emplace_back(&EngineDedup::find_remove_ptrs_sharded_part, this, min_len, hack, p, &start_end_rank_by_shard_by_part[p], low_ram ? nullptr : &remove_ptrs_by_shard_by_part[p]);
+            if ((p + 1) % num_threads == 0) {
+                cout << "Batch " << p / num_threads << " starting ..." << endl;
+                for (auto &thread : threads) {
+                    thread.join();
+                }
+                threads.clear();
+                cout << "Batch " << p / num_threads << " done" << endl;
+            }
+        }
+        // read back the remove_ptrs.* files
+        vector<vector<pair<U64*, U64>>> raw_remove_ptrs_by_part_by_shard(_num_shards, vector<pair<U64*, U64>>(num_parts)); // {ptr, size in u64}
+        size_t total_remove_ptrs = 0;
+        for (size_t p = 0; p < num_parts; p++) {
+            for (size_t s = 0; s < _num_shards; s++) {
+                if (low_ram) {
+                    auto [ptr, size] = load_file(_index_dirs[s] + "/dedup_minlen" + to_string(min_len) + "_hack" + to_string(hack) + "/remove_ptrs." + to_string(p), false);
+                    assert (size % sizeof(U64) == 0);
+                    raw_remove_ptrs_by_part_by_shard[s][p] = {reinterpret_cast<U64*>(ptr), size / sizeof(U64)};
+                } else {
+                    raw_remove_ptrs_by_part_by_shard[s][p] = {remove_ptrs_by_shard_by_part[p][s].data(), remove_ptrs_by_shard_by_part[p][s].size()};
+                }
+                total_remove_ptrs += raw_remove_ptrs_by_part_by_shard[s][p].second;
+            }
+        }
+        cout << "total_remove_ptrs: " << total_remove_ptrs << endl;
+        end_time = chrono::high_resolution_clock::now();
+        cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
+
+        cout << "Merging remove_ptrs into remove_ranges ..." << endl;
+        start_time = chrono::high_resolution_clock::now();
+        vector<U64> remove_ranges_cnt_by_shard(_num_shards, 0);
+        vector<U64> remove_bytes_cnt_by_shard(_num_shards, 0);
+        // the actual heavy lifting
+        for (size_t s = 0; s < _num_shards; s++) {
+            threads.emplace_back(&EngineDedup::merge_ptrs_into_ranges_sharded_worker, this, min_len, hack, s, &raw_remove_ptrs_by_part_by_shard[s], &remove_ranges_cnt_by_shard[s], &remove_bytes_cnt_by_shard[s]);
+        }
+        for (auto &thread : threads) {
+            thread.join();
+        }
+        threads.clear();
+        // delete the remove_ptrs.* files
+        if (low_ram) {
+            for (size_t s = 0; s < _num_shards; s++) {
+                for (size_t p = 0; p < num_parts; p++) {
+                    munmap(raw_remove_ptrs_by_part_by_shard[s][p].first, raw_remove_ptrs_by_part_by_shard[s][p].second * sizeof(U64));
+                    fs::remove(_index_dirs[s] + "/dedup_minlen" + to_string(min_len) + "_hack" + to_string(hack) + "/remove_ptrs." + to_string(p));
+                }
+            }
+        }
+        U64 total_remove_ranges = accumulate(remove_ranges_cnt_by_shard.begin(), remove_ranges_cnt_by_shard.end(), (U64)0);
+        U64 total_remove_bytes = accumulate(remove_bytes_cnt_by_shard.begin(), remove_bytes_cnt_by_shard.end(), (U64)0);
+        cout << "total_remove_ranges: " << total_remove_ranges << endl;
+        cout << "total_remove_bytes: " << total_remove_bytes << endl;
+        end_time = chrono::high_resolution_clock::now();
+        cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
+    }
+
+    void partition_sharded(const size_t min_len, const size_t p, const size_t num_parts, vector<U64>* const out_start_rank_by_shard) const {
+
+        (*out_start_rank_by_shard)[0] = _shards[0].tok_cnt * p / num_parts;
+        for (size_t s = 1; s < _num_shards; s++) {
+            (*out_start_rank_by_shard)[s] = (p == 0) ? 0 : _lower_bound(s, (*out_start_rank_by_shard)[0], min_len);
+        }
+        // if the smallest one from this part shares a minlen-prefix with the largest one from the previous part, we need to advance these ranks
+        if (p > 0) {
+            // find the largest (s, ptr) in the previous part
+            size_t s_best = 0;
+            U64 rank_best = (*out_start_rank_by_shard)[0] - 1;
+            U64 ptr_best = _convert_rank_to_ptr(_shards[s_best], rank_best);
+            for (size_t s = 1; s < _num_shards; s++) {
+                U64 rank = (*out_start_rank_by_shard)[s] - 1;
+                if (rank == (U64)-1) continue;
+                U64 ptr = _convert_rank_to_ptr(_shards[s], rank);
+                if (lexicographical_compare(
+                    _shards[s_best].ds + ptr_best, _shards[s_best].ds + min(ptr_best + min_len, _shards[s_best].ds_size),
+                    _shards[s].ds + ptr, _shards[s].ds + min(ptr + min_len, _shards[s].ds_size)
+                )) { // ptr_best < ptr
+                    s_best = s;
+                    ptr_best = ptr;
+                }
+            }
+            // advance this part's start until its minlen-prefix is different from (s_best, ptr_best)
+            for (size_t s = 0; s < _num_shards; s++) {
+                while ((*out_start_rank_by_shard)[s] < _shards[s].tok_cnt) {
+                    U64 rank = (*out_start_rank_by_shard)[s];
+                    U64 ptr = _convert_rank_to_ptr(_shards[s], rank);
+                    if (lexicographical_compare(
+                        _shards[s_best].ds + ptr_best, _shards[s_best].ds + min(ptr_best + min_len, _shards[s_best].ds_size),
+                        _shards[s].ds + ptr, _shards[s].ds + min(ptr + min_len, _shards[s].ds_size)
+                    )) { // ptr_best < ptr
+                        break;
+                    }
+                    (*out_start_rank_by_shard)[s]++;
+                }
+            }
+        }
+    }
+
+    void find_remove_ptrs_sharded_part(const size_t min_len, const size_t hack, const size_t p, const vector<pair<U64, U64>>* const start_end_rank_by_shard, vector<vector<U64>>* const out_remove_ptrs_by_shard) const {
+
+        // TODO: add sa prefetching
+
+        vector<U64> next_rank_by_shard(_num_shards);
+        for (size_t s = 0; s < _num_shards; s++) {
+            next_rank_by_shard[s] = (*start_end_rank_by_shard)[s].first;
+        }
+        auto cmp = [&](const pair<size_t, U64> &a, const pair<size_t, U64> &b) { // a > b
+            return lexicographical_compare(
+                _shards[b.first].ds + b.second, _shards[b.first].ds + min(b.second + hack, _shards[b.first].ds_size),
+                _shards[a.first].ds + a.second, _shards[a.first].ds + min(a.second + hack, _shards[a.first].ds_size)
+            );
+        };
+        priority_queue<pair<size_t, U64>, vector<pair<size_t, U64>>, decltype(cmp)> min_heap(cmp);
+        for (size_t s = 0; s < _num_shards; s++) {
+            // push the first rank from shard s to the heap, if there is one
+            if (next_rank_by_shard[s] < (*start_end_rank_by_shard)[s].second) {
+                U64 rank = next_rank_by_shard[s];
+                U64 ptr = _convert_rank_to_ptr(_shards[s], rank);
+                min_heap.push({s, ptr});
+                next_rank_by_shard[s]++;
+            }
+        }
+        vector<vector<U64>> remove_ptrs_by_shard(_num_shards);
+        vector<pair<size_t, U64>> buff;
+        while (!min_heap.empty()) {
+            auto [s, ptr] = min_heap.top();
+            min_heap.pop();
+            // push the next rank from shard s to the heap, if there is one
+            if (next_rank_by_shard[s] < (*start_end_rank_by_shard)[s].second) {
+                U64 rank = next_rank_by_shard[s];
+                U64 ptr = _convert_rank_to_ptr(_shards[s], rank);
+                min_heap.push({s, ptr});
+                next_rank_by_shard[s]++;
+            }
+
+            if (buff.size() == 0) {
+                buff.push_back({s, ptr});
+                continue;
+            }
+            auto [s_prev, ptr_prev] = buff.back();
+            // if (s_prev, ptr_prev) and (s, ptr) share prefix of length min_len, keep moving
+            if (ptr + min_len <= _shards[s].ds_size &&
+                ptr_prev + min_len <= _shards[s_prev].ds_size &&
+                memcmp(_shards[s].ds + ptr, _shards[s_prev].ds + ptr_prev, min_len) == 0 &&
+                find(_shards[s].ds + ptr, _shards[s].ds + ptr + min_len, (U8)-1) == _shards[s].ds + ptr + min_len) {
+                buff.push_back({s, ptr});
+                continue;
+            }
+            if (buff.size() > 1) { // the buffer has more than one element, keep the smallest one and remove the rest
+                pair<size_t, U64> smallest_elem = *min_element(buff.begin(), buff.end());
+                for (const auto &elem : buff) {
+                    if (elem != smallest_elem) {
+                        remove_ptrs_by_shard[elem.first].push_back(elem.second);
+                    }
+                }
+            }
+            buff.clear();
+            buff.push_back({s, ptr});
+        }
+
+        size_t remove_ptrs_size = 0;
+        for (size_t s = 0; s < _num_shards; s++) {
+            sort(remove_ptrs_by_shard[s].begin(), remove_ptrs_by_shard[s].end());
+            remove_ptrs_size += remove_ptrs_by_shard[s].size();
+        }
+
+        if (out_remove_ptrs_by_shard) { // return remove_ptrs to the caller
+            *out_remove_ptrs_by_shard = move(remove_ptrs_by_shard);
+        } else { // write remove_ptrs to a binary file
+            for (size_t s = 0; s < _num_shards; s++) {
+                string filename = _index_dirs[s] + "/dedup_minlen" + to_string(min_len) + "_hack" + to_string(hack) + "/remove_ptrs." + to_string(p);
+                ofstream fout(filename, ios::binary);
+                fout.write(reinterpret_cast<const char*>(remove_ptrs_by_shard[s].data()), remove_ptrs_by_shard[s].size() * sizeof(U64));
+                fout.close();
+            }
+        }
+
+        if (p == 0) {
+            cout << "Part 0 done, remove_ptrs_size: " << remove_ptrs_size << endl;
+        }
+    }
+
+    void merge_ptrs_into_ranges_sharded_worker(const size_t min_len, const size_t hack, const size_t s, const vector<pair<U64*, U64>>* const raw_remove_ptrs_by_part, U64* const out_remove_ranges_cnt, U64* const out_remove_bytes_cnt) const {
+
+        vector<PSS> remove_ranges;
+        size_t num_parts = raw_remove_ptrs_by_part->size();
+
+        using HeapElement = pair<U64, size_t>;
+        priority_queue<HeapElement, vector<HeapElement>, greater<HeapElement>> min_heap;
+        vector<size_t> next_by_part(num_parts, 0);
+        for (size_t p = 0; p < num_parts; p++) {
+            if (next_by_part[p] < (*raw_remove_ptrs_by_part)[p].second) {
+                min_heap.push({(*raw_remove_ptrs_by_part)[p].first[next_by_part[p]], p});
+                next_by_part[p]++;
+            }
+        }
+        while (!min_heap.empty()) {
+            auto [ptr, p] = min_heap.top();
+            min_heap.pop();
+            if (next_by_part[p] < (*raw_remove_ptrs_by_part)[p].second) {
+                min_heap.push({(*raw_remove_ptrs_by_part)[p].first[next_by_part[p]], p});
+                next_by_part[p]++;
+            }
+
+            if (remove_ranges.size() > 0 && remove_ranges.back().second >= ptr) {
+                remove_ranges.back().second = ptr + min_len;
+            } else {
+                remove_ranges.push_back({ptr, ptr + min_len});
+            }
+        }
+
+        *out_remove_ranges_cnt = 0;
+        *out_remove_bytes_cnt = 0;
+        for (const auto &[s, e] : remove_ranges) {
+            *out_remove_ranges_cnt += 1;
+            *out_remove_bytes_cnt += e - s;
+        }
+
+        string filename = _index_dirs[s] + "/dedup_minlen" + to_string(min_len) + "_hack" + to_string(hack) + "/remove_ranges";
+        ofstream fout(filename, ios::binary);
+        fout.write(reinterpret_cast<const char*>(remove_ranges.data()), remove_ranges.size() * sizeof(PSS));
+        fout.close();
     }
 
     vector<DupPtr> find_dup_ptrs(const size_t min_len) const {
@@ -591,10 +834,29 @@ private:
         return ptr;
     }
 
+    U64 _lower_bound(const size_t s, const U64 rank_in_s0, const size_t len) const {
+        U64 ptr_in_s0 = _convert_rank_to_ptr(_shards[0], rank_in_s0);
+        U64 lo = -1, hi = _shards[s].tok_cnt; // lo is always < ptr_in_s0, hi is always >= ptr_in_s0
+        while (hi - lo > 1) {
+            U64 mi = (lo + hi) >> 1;
+            U64 ptr = _convert_rank_to_ptr(_shards[s], mi);
+            if (lexicographical_compare(
+                _shards[s].ds + ptr, _shards[s].ds + min(ptr + len, _shards[s].ds_size),
+                _shards[0].ds + ptr_in_s0, _shards[0].ds + min(ptr_in_s0 + len, _shards[0].ds_size)
+            )) { // ptr < ptr_in_s0
+                lo = mi;
+            } else {
+                hi = mi;
+            }
+        }
+        return hi;
+    }
+
 private:
 
     T _doc_sep_id;
     vector<U8> _doc_sep;
+    vector<string> _index_dirs;
     size_t _num_shards;
     vector<DatastoreShard> _shards;
 };

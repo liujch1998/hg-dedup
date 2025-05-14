@@ -3,3 +3,4 @@ index/
 output/
 a.out
 *.so
+rust_indexing
