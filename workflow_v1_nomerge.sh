@@ -9,8 +9,8 @@ python -m indexing_v6_sharded.py \
     --save_dir /data/${INDEX_NAME} \
     --token_dtype u8 \
     --cpus 128 \
-    --add_metadata \
-    --num_batches 8
+    --num_batches 8 \
+    --add_metadata
 
 python find_remove_ranges.py \
     --index_dir /data/${INDEX_NAME} \
@@ -20,10 +20,10 @@ python find_remove_ranges.py \
     --low_ram \
     --num_batches 2
 
-time python write_back_to_jsonl.py \
+python write_back_to_jsonl_sharded.py \
     --index_dir /data/${INDEX_NAME} \
     --minlen ${MINLEN} \
     --output_dir /data/${NAME}_minlen${MINLEN} \
-    --num_workers 16
+    --num_workers 128
 
 aws s3 cp --recursive /data/${NAME}_minlen${MINLEN} s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/minhash_suffarr/minhash_suffarr_minlen${MINLEN}
