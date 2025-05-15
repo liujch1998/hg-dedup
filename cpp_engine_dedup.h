@@ -167,21 +167,19 @@ public:
             int fd = open(path.c_str(), O_RDONLY);
             assert (fd != -1);
             struct stat st;
-            fstat(fd, &st);
+            assert (fstat(fd, &st) == 0);
             size_t size = st.st_size;
             U8 *buf = new U8[size];
             size_t num_threads = 16;
-            size_t chunk_size = (size + num_threads - 1) / num_threads;
             vector<thread> threads;
             for (size_t i = 0; i < num_threads; i++) {
                 threads.emplace_back([&, i]() {
-                    size_t offset = i * chunk_size;
-                    size_t to_read = min(chunk_size, size - offset);
-                    while (to_read > 0) {
-                        ssize_t r = pread(fd, (char*)buf + offset, to_read, offset);
+                    size_t start_byte = size * i / num_threads;
+                    size_t end_byte = size * (i + 1) / num_threads;
+                    while (start_byte < end_byte) {
+                        ssize_t r = pread(fd, (char*)buf + start_byte, end_byte - start_byte, start_byte);
                         assert (r > 0);
-                        offset += r;
-                        to_read -= r;
+                        start_byte += r;
                     }
                 });
             }

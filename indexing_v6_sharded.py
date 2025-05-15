@@ -168,15 +168,6 @@ def prepare_manyfiles_map(args, s, paths):
 
 def prepare_manyfiles(args):
 
-    ds_path = os.path.join(args.save_dir, f'tokenized')
-    od_path = os.path.join(args.save_dir, f'offset')
-    mt_path = os.path.join(args.save_dir, f'metadata')
-    om_path = os.path.join(args.save_dir, f'metaoff')
-    ug_path = os.path.join(args.save_dir, f'unigram')
-    if all([os.path.exists(path) for path in [ds_path, od_path]]):
-        print('Step 1 (prepare): Skipped. All files already exist.', flush=True)
-        return
-
     print('Step 1 (prepare): Starting ...', flush=True)
     start_time = time.time()
 
@@ -197,6 +188,15 @@ def prepare_manyfiles(args):
 
 def prepare(args):
 
+    ds_paths = [os.path.join(args.save_dir, f'{s}', 'tokenized') for s in range(args.num_batches * args.cpus)]
+    od_paths = [os.path.join(args.save_dir, f'{s}', 'offset') for s in range(args.num_batches * args.cpus)]
+    mt_paths = [os.path.join(args.save_dir, f'{s}', 'metadata') for s in range(args.num_batches * args.cpus)]
+    om_paths = [os.path.join(args.save_dir, f'{s}', 'metaoff') for s in range(args.num_batches * args.cpus)]
+    ug_paths = [os.path.join(args.save_dir, f'{s}', 'unigram') for s in range(args.num_batches * args.cpus)]
+    if all([os.path.exists(path) for path in ds_paths + od_paths]):
+        print('Step 1 (prepare): Skipped. All files already exist.', flush=True)
+        return
+
     global tokenizer
     if args.tokenizer is None:
         tokenizer = None
@@ -212,13 +212,14 @@ def prepare(args):
     else:
         raise ValueError(f'Unknown tokenizer: {args.tokenizer}')
 
-    data_paths = list(sorted(glob.glob(f'{args.data_dir}/**/*.json*', recursive=True)))
-    if len(data_paths) < args.cpus:
-        prepare_fewfiles(args)
-    else:
-        prepare_manyfiles(args)
+    prepare_manyfiles(args)
 
 def build_sa(args):
+
+    sa_paths = [os.path.join(args.save_dir, f'{s}', 'table') for s in range(args.num_batches * args.cpus)]
+    if all([os.path.exists(sa_path) for sa_path in sa_paths]):
+        print('Step 2 (build_sa): Skipped. All files already exist.', flush=True)
+        return
 
     print('Step 2 (build_sa): Starting ...', flush=True)
     start_time = time.time()
