@@ -1,32 +1,26 @@
-# # Install packages
-# echo "Install packages: Starting ..."
-# sudo yum install -y git
-# echo "Install packages: Done"
-# echo "================================================"
+# Mount volumes
+echo "Mount volumes: Starting ..."
+DEVICE=/dev/$(lsblk -o NAME,SIZE | grep -E 'nvme[0-9]+n1' | awk '$2 == "16T" {print $1}')
+sudo mkfs -t ext4 $DEVICE
+sudo mkdir /data
+sudo mount $DEVICE /data
+sudo chown $USER:$USER /data
+echo "Mount volumes: Done"
+echo "================================================"
 
-# # Mount volumes
-# echo "Mount volumes: Starting ..."
-# DEVICE=/dev/$(lsblk -o NAME,SIZE | grep -E 'nvme[0-9]+n1' | awk '$2 == "16T" {print $1}')
-# sudo mkfs -t ext4 $DEVICE
-# sudo mkdir /data
-# sudo mount $DEVICE /data
-# sudo chown $USER:$USER /data
-# echo "Mount volumes: Done"
-# echo "================================================"
-
-# # Clone repo
-# echo "Clone repo: Starting ..."
-# git clone https://github.com/liujch1998/hg-dedup.git
+# Clone repo
+echo "Clone repo: Starting ..."
+git clone https://github.com/liujch1998/hg-dedup.git
 cd hg-dedup
-# echo "Clone repo: Done"
-# echo "================================================"
+echo "Clone repo: Done"
+echo "================================================"
 
-# # Install conda
-# echo "Install conda: Starting ..."
-# mkdir -p ~/miniconda3
-# wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh --quiet
-# bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
-# rm -rf ~/miniconda3/miniconda.sh
+# Install conda
+echo "Install conda: Starting ..."
+mkdir -p ~/miniconda3
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh --quiet
+bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+rm -rf ~/miniconda3/miniconda.sh
 # ~/miniconda3/bin/conda init bash
 # source /home/ubuntu/.bashrc
 eval "$(~/miniconda3/bin/conda 'shell.bash' 'hook' 2> /dev/null)"
