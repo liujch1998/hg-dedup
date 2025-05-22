@@ -71,41 +71,22 @@ echo "Download data: Done"
 
 echo "Indexing: Starting ..."
 if [ "$INSTANCE_TYPE" == "x2idn" ]; then
-    time python indexing_v6_sharded.py \
-        --data_dir /data/${NAME} \
-        --save_dir /data/${INDEX_NAME} \
-        --token_dtype u8 \
-        --cpus 128 \
-        --num_batches 8 \
-        --add_metadata
+    time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 8 --add_metadata
 elif [ "$INSTANCE_TYPE" == "i4i" ]; then
-    time python indexing_v6_sharded.py \
-        --data_dir /data/${NAME} \
-        --save_dir /data/${INDEX_NAME} \
-        --token_dtype u8 \
-        --cpus 128 \
-        --num_batches 8 \
-        --add_metadata \
-        --split_to_volumes
+    time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 16 --add_metadata --num_volumes 8
 fi
 echo "Indexing: Done"
 
 echo "Find remove ranges: Starting ..."
-time python find_remove_ranges.py \
-    --index_dir /data/${INDEX_NAME} \
-    --minlen ${MINLEN} \
-    --mode parallel_sharded \
-    --num_threads 128 \
-    --low_ram \
-    --num_batches 8
+if [ "$INSTANCE_TYPE" == "x2idn" ]; then
+    time python find_remove_ranges.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --mode parallel_sharded --num_threads 128 --low_ram --num_batches 2
+elif [ "$INSTANCE_TYPE" == "i4i" ]; then
+    time python find_remove_ranges.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --mode parallel_sharded --num_threads 128 --low_ram --num_batches 8
+fi
 echo "Find remove ranges: Done"
 
 echo "Write back to jsonl: Starting ..."
-time python write_back_to_jsonl_sharded.py \
-    --index_dir /data/${INDEX_NAME} \
-    --minlen ${MINLEN} \
-    --output_dir /data/${NAME}_minlen${MINLEN} \
-    --num_workers 128
+time python write_back_to_jsonl_sharded.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --output_dir /data/${NAME}_minlen${MINLEN} --num_workers 128
 echo "Write back to jsonl: Done"
 
 echo "Upload data: Starting ..."
@@ -114,6 +95,11 @@ echo "Upload data: Done"
 
 rm -r /data/${NAME}
 rm -r /data/${INDEX_NAME}
+if [ "$INSTANCE_TYPE" == "i4i" ]; then
+    for i in {1..7}; do
+        rm -r /data-${i}/${INDEX_NAME}
+    done
+fi
 rm -r /data/${NAME}_minlen${MINLEN}
 echo "Run workflow: Done"
 echo "================================================"

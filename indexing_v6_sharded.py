@@ -124,10 +124,10 @@ def prepare_fewfiles(args):
 
 def prepare_manyfiles_map(args, s, paths):
 
-    if (not args.split_to_volumes) or (s // args.cpus == 0):
+    if s % args.num_volumes == 0:
         os.makedirs(f'{args.save_dir}/{s}', exist_ok=True)
     else:
-        real_save_dir = args.save_dir.replace("/data", f"/data-{s // args.cpus}")
+        real_save_dir = args.save_dir.replace("/data", f"/data-{s % args.num_volumes}")
         os.makedirs(f'{real_save_dir}/{s}', exist_ok=True)
         os.symlink(f'{real_save_dir}/{s}', f'{args.save_dir}/{s}', target_is_directory=True)
 
@@ -267,7 +267,7 @@ def main():
     parser.add_argument('--cpus', type=int, default=mp.cpu_count(), help='Number of CPU cores available to the program.')
     parser.add_argument('--num_batches', type=int, default=1, help='Number of batches to process the data.')
     parser.add_argument('--ulimit', type=int, default=524288, help='Maximum number of open files allowed.')
-    parser.add_argument('--split_to_volumes', default=False, action='store_true', help='Whether to split the index to multiple volumes.')
+    parser.add_argument('--num_volumes', type=int, default=1, help='Number of volumes to split the index to.')
     args = parser.parse_args()
 
     if args.temp_dir is None:
