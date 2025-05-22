@@ -1,4 +1,4 @@
-INSTANCE_TYPE=$1
+INSTANCE_TYPE="i4i"
 if [ "$INSTANCE_TYPE" != "i4i" ] && [ "$INSTANCE_TYPE" != "x2idn" ]; then
     echo "Invalid instance type: $INSTANCE_TYPE"
     exit 1
@@ -6,7 +6,13 @@ fi
 
 # Mount volumes
 echo "Mount volumes: Starting ..."
-if [ "$INSTANCE_TYPE" == "i4i" ]; then
+if [ "$INSTANCE_TYPE" == "x2idn" ]; then
+    DEVICE=/dev/$(lsblk -o NAME,SIZE | grep -E 'nvme[0-9]+n1' | awk '$2 == "16T" {print $1}')
+    sudo mkfs -t ext4 $DEVICE
+    sudo mkdir /data
+    sudo mount $DEVICE /data
+    sudo chown $USER:$USER /data
+elif [ "$INSTANCE_TYPE" == "i4i" ]; then
     DEVICE=/dev/nvme8n1
     sudo mkfs -t ext4 $DEVICE
     sudo mkdir /data
@@ -19,12 +25,6 @@ if [ "$INSTANCE_TYPE" == "i4i" ]; then
         sudo mount $DEVICE /data-${i}
         sudo chown $USER:$USER /data-${i}
     done
-elif [ "$INSTANCE_TYPE" == "x2idn" ]; then
-    DEVICE=/dev/$(lsblk -o NAME,SIZE | grep -E 'nvme[0-9]+n1' | awk '$2 == "16T" {print $1}')
-    sudo mkfs -t ext4 $DEVICE
-    sudo mkdir /data
-    sudo mount $DEVICE /data
-    sudo chown $USER:$USER /data
 fi
 echo "Mount volumes: Done"
 echo "================================================"
@@ -64,9 +64,22 @@ export NAME="deduplication_ablations_v1_minhash_suffarr_minhash_only"
 export INDEX_NAME="v6_${NAME}_u8"
 export MINLEN="200"
 export AWS_MAX_CONCURRENCY=128
-aws s3 sync s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/minhash_suffarr/minhash_only/ /data/${NAME}/ --only-show-errors
-if [ "$INSTANCE_TYPE" == "i4i" ]; then
-    python indexing_v6_sharded.py \
+
+echo "Download data: Starting ..."
+time aws s3 sync s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/minhash_suffarr/minhash_only/ /data/${NAME}/ --only-show-errors
+echo "Download data: Done"
+
+echo "Indexing: Starting ..."
+if [ "$INSTANCE_TYPE" == "x2idn" ]; then
+    time python indexing_v6_sharded.py \
+        --data_dir /data/${NAME} \
+        --save_dir /data/${INDEX_NAME} \
+        --token_dtype u8 \
+        --cpus 128 \
+        --num_batches 8 \
+        --add_metadata
+elif [ "$INSTANCE_TYPE" == "i4i" ]; then
+    time python indexing_v6_sharded.py \
         --data_dir /data/${NAME} \
         --save_dir /data/${INDEX_NAME} \
         --token_dtype u8 \
@@ -74,28 +87,31 @@ if [ "$INSTANCE_TYPE" == "i4i" ]; then
         --num_batches 8 \
         --add_metadata \
         --split_to_volumes
-elif [ "$INSTANCE_TYPE" == "x2idn" ]; then
-    python indexing_v6_sharded.py \
-        --data_dir /data/${NAME} \
-        --save_dir /data/${INDEX_NAME} \
-        --token_dtype u8 \
-        --cpus 128 \
-        --num_batches 8 \
-        --add_metadata
 fi
-python find_remove_ranges.py \
+echo "Indexing: Done"
+
+echo "Find remove ranges: Starting ..."
+time python find_remove_ranges.py \
     --index_dir /data/${INDEX_NAME} \
     --minlen ${MINLEN} \
     --mode parallel_sharded \
     --num_threads 128 \
     --low_ram \
     --num_batches 8
-python write_back_to_jsonl_sharded.py \
+echo "Find remove ranges: Done"
+
+echo "Write back to jsonl: Starting ..."
+time python write_back_to_jsonl_sharded.py \
     --index_dir /data/${INDEX_NAME} \
     --minlen ${MINLEN} \
     --output_dir /data/${NAME}_minlen${MINLEN} \
     --num_workers 128
-aws s3 sync /data/${NAME}_minlen${MINLEN} s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/minhash_suffarr/minhash_suffarr_minlen${MINLEN} --only-show-errors
+echo "Write back to jsonl: Done"
+
+echo "Upload data: Starting ..."
+time aws s3 sync /data/${NAME}_minlen${MINLEN} s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/minhash_suffarr/minhash_suffarr_minlen${MINLEN} --only-show-errors
+echo "Upload data: Done"
+
 rm -r /data/${NAME}
 rm -r /data/${INDEX_NAME}
 rm -r /data/${NAME}_minlen${MINLEN}
