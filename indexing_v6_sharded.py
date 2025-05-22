@@ -124,7 +124,12 @@ def prepare_fewfiles(args):
 
 def prepare_manyfiles_map(args, s, paths):
 
-    os.makedirs(f'{args.save_dir}/{s}', exist_ok=True)
+    if (not args.split_to_volumes) or (s // args.cpus == 0):
+        os.makedirs(f'{args.save_dir}/{s}', exist_ok=True)
+    else:
+        real_save_dir = args.save_dir.replace("/data", f"/data-{s // args.cpus}")
+        os.makedirs(f'{real_save_dir}/{s}', exist_ok=True)
+        os.symlink(f'{real_save_dir}/{s}', f'{args.save_dir}/{s}', target_is_directory=True)
 
     ds_fout = open(f'{args.save_dir}/{s}/tokenized', 'wb')
     od_fout = open(f'{args.save_dir}/{s}/offset', 'wb')
@@ -261,7 +266,8 @@ def main():
     parser.add_argument('--batch_size', type=int, default=65536, help='Batch size for tokenization.')
     parser.add_argument('--cpus', type=int, default=mp.cpu_count(), help='Number of CPU cores available to the program.')
     parser.add_argument('--num_batches', type=int, default=1, help='Number of batches to process the data.')
-    parser.add_argument('--ulimit', type=int, default=1048576, help='Maximum number of open files allowed.')
+    parser.add_argument('--ulimit', type=int, default=524288, help='Maximum number of open files allowed.')
+    parser.add_argument('--split_to_volumes', default=False, action='store_true', help='Whether to split the index to multiple volumes.')
     args = parser.parse_args()
 
     if args.temp_dir is None:
