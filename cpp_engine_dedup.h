@@ -556,48 +556,51 @@ public:
                 cout << "Batch " << p / num_threads << " done" << endl;
             }
         }
-        // read back the remove_ptrs.* files
-        vector<vector<pair<U64*, U64>>> raw_remove_ptrs_by_part_by_shard(_num_shards, vector<pair<U64*, U64>>(num_parts)); // {ptr, size in u64}
-        size_t total_remove_ptrs = 0;
-        for (size_t p = 0; p < num_parts; p++) {
-            for (size_t s = 0; s < _num_shards; s++) {
-                if (low_ram) {
-                    auto [ptr, size] = load_file(_index_dirs[s] + "/dedup_minlen" + to_string(min_len) + "/remove_ptrs." + to_string(p), false);
-                    assert (size % sizeof(U64) == 0);
-                    raw_remove_ptrs_by_part_by_shard[s][p] = {reinterpret_cast<U64*>(ptr), size / sizeof(U64)};
-                } else {
-                    raw_remove_ptrs_by_part_by_shard[s][p] = {remove_ptrs_by_shard_by_part[p][s].data(), remove_ptrs_by_shard_by_part[p][s].size()};
-                }
-                total_remove_ptrs += raw_remove_ptrs_by_part_by_shard[s][p].second;
-            }
-        }
-        cout << "total_remove_ptrs: " << total_remove_ptrs << endl;
         end_time = chrono::high_resolution_clock::now();
         cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
 
         cout << "Merging remove_ptrs into remove_ranges ..." << endl;
         start_time = chrono::high_resolution_clock::now();
+        vector<vector<pair<U64*, U64>>> raw_remove_ptrs_by_part_by_shard(_num_shards, vector<pair<U64*, U64>>(num_parts)); // {ptr, size in u64}
+        size_t total_remove_ptrs = 0;
         vector<U64> remove_ranges_cnt_by_shard(_num_shards, 0);
         vector<U64> remove_bytes_cnt_by_shard(_num_shards, 0);
-        // the actual heavy lifting
-        for (size_t s = 0; s < _num_shards; s++) {
-            threads.emplace_back(&EngineDedup::merge_ptrs_into_ranges_sharded_worker, this, min_len, s, &raw_remove_ptrs_by_part_by_shard[s], &remove_ranges_cnt_by_shard[s], &remove_bytes_cnt_by_shard[s]);
-        }
-        for (auto &thread : threads) {
-            thread.join();
-        }
-        threads.clear();
-        // delete the remove_ptrs.* files
-        if (low_ram) {
-            for (size_t s = 0; s < _num_shards; s++) {
+        for (size_t s_start = 0; s_start < _num_shards; s_start += num_threads) {
+            size_t s_end = min(s_start + num_threads, _num_shards);
+            // read back the remove_ptrs.* files
+            for (size_t s = s_start; s < s_end; s++) {
                 for (size_t p = 0; p < num_parts; p++) {
-                    munmap(raw_remove_ptrs_by_part_by_shard[s][p].first, raw_remove_ptrs_by_part_by_shard[s][p].second * sizeof(U64));
-                    fs::remove(_index_dirs[s] + "/dedup_minlen" + to_string(min_len) + "/remove_ptrs." + to_string(p));
+                    if (low_ram) {
+                        auto [ptr, size] = load_file(_index_dirs[s] + "/dedup_minlen" + to_string(min_len) + "/remove_ptrs." + to_string(p), false);
+                        assert (size % sizeof(U64) == 0);
+                        raw_remove_ptrs_by_part_by_shard[s][p] = {reinterpret_cast<U64*>(ptr), size / sizeof(U64)};
+                    } else {
+                        raw_remove_ptrs_by_part_by_shard[s][p] = {remove_ptrs_by_shard_by_part[p][s].data(), remove_ptrs_by_shard_by_part[p][s].size()};
+                    }
+                    total_remove_ptrs += raw_remove_ptrs_by_part_by_shard[s][p].second;
+                }
+            }
+            // the actual heavy lifting
+            for (size_t s = s_start; s < s_end; s++) {
+                threads.emplace_back(&EngineDedup::merge_ptrs_into_ranges_sharded_worker, this, min_len, s, &raw_remove_ptrs_by_part_by_shard[s], &remove_ranges_cnt_by_shard[s], &remove_bytes_cnt_by_shard[s]);
+            }
+            for (auto &thread : threads) {
+                thread.join();
+            }
+            threads.clear();
+            // unmap and delete the remove_ptrs.* files
+            for (size_t s = s_start; s < s_end; s++) {
+                for (size_t p = 0; p < num_parts; p++) {
+                    if (low_ram) {
+                        munmap(raw_remove_ptrs_by_part_by_shard[s][p].first, raw_remove_ptrs_by_part_by_shard[s][p].second * sizeof(U64));
+                        fs::remove(_index_dirs[s] + "/dedup_minlen" + to_string(min_len) + "/remove_ptrs." + to_string(p));
+                    }
                 }
             }
         }
         U64 total_remove_ranges = accumulate(remove_ranges_cnt_by_shard.begin(), remove_ranges_cnt_by_shard.end(), (U64)0);
         U64 total_remove_bytes = accumulate(remove_bytes_cnt_by_shard.begin(), remove_bytes_cnt_by_shard.end(), (U64)0);
+        cout << "total_remove_ptrs: " << total_remove_ptrs << endl;
         cout << "total_remove_ranges: " << total_remove_ranges << endl;
         cout << "total_remove_bytes: " << total_remove_bytes << endl;
         cout << "total_bytes_before_remove: " << get_total_ds_size() << endl;

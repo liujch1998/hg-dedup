@@ -82,8 +82,8 @@ You should choose the number of batches $B_P$ such that $N + 8 \times p \times N
 
 Another consideration is the number of open files.
 For each shard, the script will dump $P = C \times B_P$ temporary `remove_ptrs.{p}` files in `dedup_minlen{MINLEN}/` under the shard's subdirectory.
-To mmap them all back, it needs to open $S \times P = C^2 \times B_S \times B_P$ files simultaneously.
-The Linux system has a limit on this, typically it is 1048576, and you can check this limit with `ulimit -u`.
+We mmap back these files for $C$ shards at a time, which means it needs to open $C \times P = C^2 \times B_P$ files simultaneously.
+The Linux system has a limit on this, typically it is 1048576, and you can check this limit with `ulimit -n`.
 
 ### Writeback the deduped dataset
 
