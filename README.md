@@ -3,12 +3,12 @@
 This repo contains scripts to substring-dedup a pre-training dataset using suffix array (SA).
 It is the best SA dedup ever because (1) it is very fast, and (2) we keep one copy of each repeated string, whereas previous implementations would remove all copies.
 
-On machines with 2TB RAM, it can typically globally dedup a dataset up to 1TB (uncompressed text).
+On machines with 2TB RAM, it can typically globally dedup a dataset up to 1TB (uncompressed text) in about 6 hours.
 Larger datasets will need to be sharded.
 
 ## Example
 
-Running `aws_workflow.sh` on an AWS instance will dedup a 291GB (compressed) dataset.
+Running `aws_workflow.sh` on an AWS `x2idn.32xlarge` instance will dedup a 291GB (compressed) / 594GB (uncompressed) dataset.
 `aws_launch.sh` streamlines the instance creation and job launching.
 
 ## Steps
