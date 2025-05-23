@@ -69,7 +69,7 @@ export MINLEN="500"
 export AWS_MAX_CONCURRENCY=128
 
 echo "Download data: Starting ..."
-time s5cmd cp -sp s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_b/ /data/${NAME}/
+time s5cmd cp -sp s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_b/* /data/${NAME}/
 echo "Download data: Done"
 
 echo "Indexing: Starting ..."
