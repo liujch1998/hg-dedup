@@ -266,7 +266,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=65536, help='Batch size for tokenization.')
     parser.add_argument('--cpus', type=int, default=mp.cpu_count(), help='Number of CPU cores available to the program.')
     parser.add_argument('--num_batches', type=int, default=1, help='Number of batches to process the data.')
-    parser.add_argument('--ulimit', type=int, default=524288, help='Maximum number of open files allowed.')
+    parser.add_argument('--ulimit', type=int, default=1048576, help='Maximum number of open files allowed.')
     parser.add_argument('--num_volumes', type=int, default=1, help='Number of volumes to split the index to.')
     args = parser.parse_args()
 

@@ -11,7 +11,7 @@ parser.add_argument("--mode", default="naive", choices=["naive", "parallel", "pa
 parser.add_argument("--num_threads", type=int, default=1)
 parser.add_argument("--low_ram", default=False, action="store_true")
 parser.add_argument("--num_batches", type=int, default=1)
-parser.add_argument("--ulimit", type=int, default=524288)
+parser.add_argument("--ulimit", type=int, default=1048576)
 args = parser.parse_args()
 
 resource.setrlimit(resource.RLIMIT_NOFILE, (args.ulimit, args.ulimit))

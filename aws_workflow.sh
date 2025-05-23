@@ -74,7 +74,7 @@ echo "Download data: Done"
 
 echo "Indexing: Starting ..."
 if [ "$INSTANCE_TYPE" == "x2idn" ]; then
-    time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 16 --add_metadata
+    time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 8 --add_metadata
 elif [ "$INSTANCE_TYPE" == "i4i" ]; then
     time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 16 --add_metadata --num_volumes 8
 fi
