@@ -57,7 +57,7 @@ Also, make sure your dataset has at least $S$ separate files.
 The script will write the index at `/data/{INDEX_NAME}`, which contains $S$ subdirectories named `0` through `S-1`.
 Subdirectory `s` is the infini-gram index for shard $s$ and contains several files: `tokenized`, `metadata`, `offset`, `metaoff`, and `table`.
 
-## Find the ranges of bytes to be removed
+### Find the ranges of bytes to be removed
 
 In this step, we will find the ranges of bytes in the SA that should be removed.
 
@@ -85,7 +85,7 @@ For each shard, the script will dump $P = C \times B_P$ temporary `remove_ptrs.{
 To mmap them all back, it needs to open $S \times P = C^2 \times B_S \times B_P$ files simultaneously.
 The Linux system has a limit on this, typically it is 1048576, and you can check this limit with `ulimit -u`.
 
-## Writeback the deduped dataset
+### Writeback the deduped dataset
 
 Now we're ready to actually remove some ranges and convert the deduped dataset back to the compressed format.
 
@@ -103,7 +103,7 @@ If you specify `--mode annotate`, the script will keep the `text` field intact, 
 **WARNING: the ranges speak in UTF-8 byte offsets, NOT character offsets!!!**
 Sometimes the ranges cuts in the middle of UTF-8 characters; in this case, we take care of this by shortening the remove ranges a little bit to align with UTF-8 character boundaries.
 
-## Upload to S3
+### Upload to S3
 
 Again, use `s5cmd`.
 For example:
