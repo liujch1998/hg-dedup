@@ -71,6 +71,7 @@ export AWS_MAX_CONCURRENCY=128
 echo "Download data: Starting ..."
 time s5cmd cp -sp s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_b/* /data/${NAME}/
 echo "Download data: Done"
+echo "------------------------------------------------"
 
 echo "Indexing: Starting ..."
 if [ "$INSTANCE_TYPE" == "x2idn" ]; then
@@ -79,6 +80,7 @@ elif [ "$INSTANCE_TYPE" == "i4i" ]; then
     time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 16 --add_metadata --num_volumes 8
 fi
 echo "Indexing: Done"
+echo "------------------------------------------------"
 
 echo "Find remove ranges: Starting ..."
 if [ "$INSTANCE_TYPE" == "x2idn" ]; then
@@ -87,14 +89,17 @@ elif [ "$INSTANCE_TYPE" == "i4i" ]; then
     time python find_remove_ranges.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --mode parallel_sharded --num_threads 128 --low_ram --num_batches 8
 fi
 echo "Find remove ranges: Done"
+echo "------------------------------------------------"
 
 echo "Write back to jsonl: Starting ..."
 time python write_back_to_jsonl_sharded.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --output_dir /data/${NAME}_minlen${MINLEN} --num_workers 128 --mode annotate
 echo "Write back to jsonl: Done"
+echo "------------------------------------------------"
 
 echo "Upload data: Starting ..."
 time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_b_suffarr_minlen${MINLEN}_annotated/
 echo "Upload data: Done"
+echo "------------------------------------------------"
 
 rm -r /data/${NAME}
 rm -r /data/${INDEX_NAME}
