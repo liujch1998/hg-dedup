@@ -600,6 +600,7 @@ public:
         U64 total_remove_bytes = accumulate(remove_bytes_cnt_by_shard.begin(), remove_bytes_cnt_by_shard.end(), (U64)0);
         cout << "total_remove_ranges: " << total_remove_ranges << endl;
         cout << "total_remove_bytes: " << total_remove_bytes << endl;
+        cout << "total_bytes_before_remove: " << get_total_ds_size() << endl;
         end_time = chrono::high_resolution_clock::now();
         cout << "Done, time taken: " << chrono::duration_cast<chrono::seconds>(end_time - start_time).count() << " seconds" << endl;
     }
@@ -897,6 +898,14 @@ public:
             total_doc_cnt += shard.doc_cnt;
         }
         return total_doc_cnt;
+    }
+
+    U64 get_total_ds_size() const {
+        U64 total_ds_size = 0;
+        for (const auto &shard : _shards) {
+            total_ds_size += shard.ds_size;
+        }
+        return total_ds_size;
     }
 
     void verify_sa_correctness(const size_t hack) const {

@@ -1,4 +1,4 @@
-INSTANCE_TYPE="i4i"
+INSTANCE_TYPE="x2idn"
 if [ "$INSTANCE_TYPE" != "i4i" ] && [ "$INSTANCE_TYPE" != "x2idn" ]; then
     echo "Invalid instance type: $INSTANCE_TYPE"
     exit 1
@@ -48,6 +48,9 @@ eval "$(~/miniconda3/bin/conda 'shell.bash' 'hook' 2> /dev/null)"
 conda env create -f environment.yml
 conda activate hg-dedup
 pip install transformers awscli
+wget https://github.com/peak/s5cmd/releases/download/v2.2.2/s5cmd_2.2.2_Linux-64bit.tar.gz
+tar -xvzf s5cmd_2.2.2_Linux-64bit.tar.gz
+sudo mv s5cmd /usr/local/bin
 echo "Install conda: Done"
 echo "================================================"
 
@@ -60,18 +63,18 @@ echo "================================================"
 
 # Run workflow
 echo "Run workflow: Starting ..."
-export NAME="deduplication_ablations_v1_minhash_suffarr_minhash_only"
+export NAME="deduplication_ablations_v1_final_ablation_minhash_10x_b"
 export INDEX_NAME="v6_${NAME}_u8"
-export MINLEN="200"
+export MINLEN="500"
 export AWS_MAX_CONCURRENCY=128
 
 echo "Download data: Starting ..."
-time aws s3 sync s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/minhash_suffarr/minhash_only/ /data/${NAME}/ --only-show-errors
+time s5cmd cp -sp s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_b/ /data/${NAME}/
 echo "Download data: Done"
 
 echo "Indexing: Starting ..."
 if [ "$INSTANCE_TYPE" == "x2idn" ]; then
-    time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 8 --add_metadata
+    time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 16 --add_metadata
 elif [ "$INSTANCE_TYPE" == "i4i" ]; then
     time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 16 --add_metadata --num_volumes 8
 fi
@@ -86,11 +89,11 @@ fi
 echo "Find remove ranges: Done"
 
 echo "Write back to jsonl: Starting ..."
-time python write_back_to_jsonl_sharded.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --output_dir /data/${NAME}_minlen${MINLEN} --num_workers 128
+time python write_back_to_jsonl_sharded.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --output_dir /data/${NAME}_minlen${MINLEN} --num_workers 128 --mode annotate
 echo "Write back to jsonl: Done"
 
 echo "Upload data: Starting ..."
-time aws s3 sync /data/${NAME}_minlen${MINLEN} s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/minhash_suffarr/minhash_suffarr_minlen${MINLEN} --only-show-errors
+time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_b_suffarr_minlen${MINLEN}_annotated/
 echo "Upload data: Done"
 
 rm -r /data/${NAME}
