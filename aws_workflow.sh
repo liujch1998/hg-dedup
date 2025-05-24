@@ -1,5 +1,5 @@
-INSTANCE_TYPE="x2idn"
-if [ "$INSTANCE_TYPE" != "i4i" ] && [ "$INSTANCE_TYPE" != "x2idn" ]; then
+INSTANCE_TYPE="i7i"
+if [ "$INSTANCE_TYPE" != "x2idn" ] && [ "$INSTANCE_TYPE" != "i4i" ] && [ "$INSTANCE_TYPE" != "i7i" ]; then
     echo "Invalid instance type: $INSTANCE_TYPE"
     exit 1
 fi
@@ -12,7 +12,7 @@ if [ "$INSTANCE_TYPE" == "x2idn" ]; then
     sudo mkdir /data
     sudo mount $DEVICE /data
     sudo chown $USER:$USER /data
-elif [ "$INSTANCE_TYPE" == "i4i" ]; then
+elif [ "$INSTANCE_TYPE" == "i4i" ] || [ "$INSTANCE_TYPE" == "i7i" ]; then
     DEVICE=/dev/nvme8n1
     sudo mkfs -t ext4 $DEVICE
     sudo mkdir /data
@@ -63,51 +63,83 @@ echo "================================================"
 
 # Run workflow
 echo "Run workflow: Starting ..."
-export NAME="deduplication_ablations_v1_final_ablation_minhash_10x_b"
+export NAME="deduplication_ablations_v1_final_ablation_minhash_10x"
 export INDEX_NAME="v6_${NAME}_u8"
 export MINLEN="500"
-export AWS_MAX_CONCURRENCY=128
 
 echo "Download data: Starting ..."
-time s5cmd cp -sp s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_b/* /data/${NAME}/
+time s5cmd cp -sp s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x/* /data/${NAME}/
+# keep 500GB
+# rm /data/${NAME}/**/shuffled_shard_0001*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000092*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000093*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000094*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000095*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000096*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000097*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000098*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000099*.jsonl.zst
+# keep 400GB
+# rm /data/${NAME}/**/shuffled_shard_0001*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_00009*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_00008*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000079*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000078*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000077*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000076*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000075*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_000074*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_0000739*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_0000738*.jsonl.zst
+# rm /data/${NAME}/**/shuffled_shard_0000737*.jsonl.zst
 echo "Download data: Done"
 echo "------------------------------------------------"
 
 echo "Indexing: Starting ..."
 if [ "$INSTANCE_TYPE" == "x2idn" ]; then
-    time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 8 --add_metadata
+    time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 16 --add_metadata
 elif [ "$INSTANCE_TYPE" == "i4i" ]; then
     time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 128 --num_batches 16 --add_metadata --num_volumes 8
+elif [ "$INSTANCE_TYPE" == "i7i" ]; then
+    time python indexing_v6_sharded.py --data_dir /data/${NAME} --save_dir /data/${INDEX_NAME} --token_dtype u8 --cpus 192 --num_batches 16 --add_metadata --num_volumes 8
 fi
 echo "Indexing: Done"
 echo "------------------------------------------------"
 
 echo "Find remove ranges: Starting ..."
 if [ "$INSTANCE_TYPE" == "x2idn" ]; then
-    time python find_remove_ranges.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --mode parallel_sharded --num_threads 128 --low_ram --num_batches 2
+    time python find_remove_ranges.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --mode parallel_sharded --num_threads 128 --low_ram --num_batches 16
 elif [ "$INSTANCE_TYPE" == "i4i" ]; then
-    time python find_remove_ranges.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --mode parallel_sharded --num_threads 128 --low_ram --num_batches 8
+    time python find_remove_ranges.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --mode parallel_sharded --num_threads 128 --low_ram --num_batches 16
+elif [ "$INSTANCE_TYPE" == "i7i" ]; then
+    time python find_remove_ranges.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --mode parallel_sharded --num_threads 192 --low_ram --num_batches 16
 fi
 echo "Find remove ranges: Done"
 echo "------------------------------------------------"
 
 echo "Write back to jsonl: Starting ..."
-time python write_back_to_jsonl_sharded.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --output_dir /data/${NAME}_minlen${MINLEN} --num_workers 128 --mode annotate
+if [ "$INSTANCE_TYPE" == "x2idn" ]; then
+    time python write_back_to_jsonl_sharded.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --output_dir /data/${NAME}_minlen${MINLEN} --num_workers 128 --mode annotate
+elif [ "$INSTANCE_TYPE" == "i4i" ]; then
+    time python write_back_to_jsonl_sharded.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --output_dir /data/${NAME}_minlen${MINLEN} --num_workers 128 --mode annotate
+elif [ "$INSTANCE_TYPE" == "i7i" ]; then
+    time python write_back_to_jsonl_sharded.py --index_dir /data/${INDEX_NAME} --minlen ${MINLEN} --output_dir /data/${NAME}_minlen${MINLEN} --num_workers 192 --mode annotate
+fi
 echo "Write back to jsonl: Done"
 echo "------------------------------------------------"
 
 echo "Upload data: Starting ..."
-time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_b_suffarr_minlen${MINLEN}_annotated/
+time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_suffarr_minlen${MINLEN}_annotated/
 echo "Upload data: Done"
 echo "------------------------------------------------"
 
 rm -r /data/${NAME}
 rm -r /data/${INDEX_NAME}
-if [ "$INSTANCE_TYPE" == "i4i" ]; then
+if [ "$INSTANCE_TYPE" == "i4i" ] || [ "$INSTANCE_TYPE" == "i7i" ]; then
     for i in {1..7}; do
         rm -r /data-${i}/${INDEX_NAME}
     done
 fi
-rm -r /data/${NAME}_minlen${MINLEN}
+rm -r /data/${NAME}_minlen${MINLEN}_annotated
 echo "Run workflow: Done"
 echo "================================================"
