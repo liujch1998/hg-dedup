@@ -17,17 +17,23 @@ if [ "$INSTANCE_TYPE" == "x2idn" ]; then
     sudo mount $DEVICE /data
     sudo chown $USER:$USER /data
 elif [ "$INSTANCE_TYPE" == "i4i" ] || [ "$INSTANCE_TYPE" == "i7i" ]; then
-    DEVICE=/dev/nvme8n1
-    sudo mkfs -t ext4 $DEVICE
-    sudo mkdir /data
-    sudo mount $DEVICE /data
-    sudo chown $USER:$USER /data
-    for i in {1..7}; do
-        DEVICE=/dev/nvme${i}n1
+    # Dynamically find the first 8 devices with size 3.4T
+    DEVICES=($(lsblk -o NAME,SIZE -dn | awk '$2 == "3.4T" {print $1}' | head -8))
+    if [ ${#DEVICES[@]} -lt 8 ]; then
+        echo "Error: Less than 8 NVMe devices with size 3.4T found."
+        exit 1
+    fi
+    for i in ${!DEVICES[@]}; do
+        DEVICE="/dev/${DEVICES[$i]}"
+        if [ $i -eq 0 ]; then
+            MOUNT_POINT="/data"
+        else
+            MOUNT_POINT="/data-$i"
+        fi
         sudo mkfs -t ext4 $DEVICE
-        sudo mkdir /data-${i}
-        sudo mount $DEVICE /data-${i}
-        sudo chown $USER:$USER /data-${i}
+        sudo mkdir -p $MOUNT_POINT
+        sudo mount $DEVICE $MOUNT_POINT
+        sudo chown $USER:$USER $MOUNT_POINT
     done
 fi
 echo "Mount volumes: Done"
@@ -114,7 +120,7 @@ for ((shard=$RANK; shard<$NUM_SHARDS; shard+=$NUM_NODES)); do
     echo "------------------------------------------------"
 
     echo "Upload data: Starting ..."
-    time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_v2/suffarr_minlen${MINLEN}_annotated/${NAME}/
+    time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_v2/sa_minlen${MINLEN}_annotated/${NAME}/
     echo "Upload data: Done"
     echo "------------------------------------------------"
 

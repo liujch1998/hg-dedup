@@ -13,6 +13,6 @@ for rank in range(args.num_nodes):
     content = content.replace("[[NUM_SHARDS]]", str(args.num_shards))
     content = content.replace("[[NUM_NODES]]", str(args.num_nodes))
     content = content.replace("[[RANK]]", str(rank))
-    with open(f"alldressed/aws_workflow_alldressed_{rank}.sh", "w") as f:
+    with open(f"alldressed/aws_workflow_alldressed_{rank:04d}.sh", "w") as f:
         f.write(content)
-    os.chmod(f"alldressed/aws_workflow_alldressed_{rank}.sh", 0o755)
+    os.chmod(f"alldressed/aws_workflow_alldressed_{rank:04d}.sh", 0o755)
