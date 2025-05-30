@@ -2,6 +2,7 @@ INSTANCE_TYPE=[[INSTANCE_TYPE]]
 NUM_SHARDS=[[NUM_SHARDS]]
 NUM_NODES=[[NUM_NODES]]
 RANK=[[RANK]]
+REMOTE_DIR=[[REMOTE_DIR]]
 
 if [ "$INSTANCE_TYPE" != "x2idn" ] && [ "$INSTANCE_TYPE" != "i4i" ] && [ "$INSTANCE_TYPE" != "i7i" ]; then
     echo "Invalid instance type: $INSTANCE_TYPE"
@@ -71,7 +72,7 @@ c++ -std=c++20 -O3 -shared -fPIC $(python3 -m pybind11 --includes) cpp_engine_de
 echo "Compile things: Done"
 echo "================================================"
 
-s5cmd cp -sp s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_v2/minhash_10shard_v3/download_scripts_sa/* /data/download_scripts/
+s5cmd cp -sp ${REMOTE_DIR}/download_scripts/* /data/download_scripts/
 
 # Run workflow
 for ((shard=$RANK; shard<$NUM_SHARDS; shard+=$NUM_NODES)); do
@@ -120,7 +121,7 @@ for ((shard=$RANK; shard<$NUM_SHARDS; shard+=$NUM_NODES)); do
     echo "------------------------------------------------"
 
     echo "Upload data: Starting ..."
-    time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_v2/sa_minlen${MINLEN}_annotated/${NAME}/
+    time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ ${REMOTE_DIR}/annotated/${NAME}/
     echo "Upload data: Done"
     echo "------------------------------------------------"
 
