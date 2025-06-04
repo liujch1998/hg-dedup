@@ -11,6 +11,15 @@ Larger datasets will need to be sharded.
 Running `aws_workflow.sh` on an AWS `x2idn.32xlarge` instance will dedup a 291GB (compressed) / 594GB (uncompressed) dataset.
 `aws_launch.sh` streamlines the instance creation and job launching.
 
+## Full e2e pipeline for alldressed
+
+```bash
+python make_multipart_downloaders.py make-download-scripts --s3-src s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_v3/minhash/param_26_11/jacc_filter/ --remote-dst /data/ --script-output ./alldressed_v3_minhash_param_26_11_jacc_filter --limit 400000000000
+s5cmd cp -sp alldressed_v3_minhash_param_26_11_jacc_filter/ s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_v3/sa_minlen500/download_scripts/
+python create_alldressed_workflows.py --num_nodes 28 --num_shards 56 --output_dir aws_workflow_alldressed_v3_minhash_param_26_11_jacc_filter --remote_dir s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_v3/sa_minlen500
+bash aws_launch_alldressed_v3_minhash_param_26_11_jacc_filter.sh
+```
+
 ## Steps
 
 Deduping a dataset involves the following steps:

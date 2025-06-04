@@ -60,8 +60,11 @@ conda env create -f environment.yml
 conda activate hg-dedup
 pip install transformers awscli
 wget https://github.com/peak/s5cmd/releases/download/v2.2.2/s5cmd_2.2.2_Linux-64bit.tar.gz
-tar -xvzf s5cmd_2.2.2_Linux-64bit.tar.gz
-sudo mv s5cmd /usr/local/bin
+mkdir -p s5cmd_2.2.2
+tar -xvzf s5cmd_2.2.2_Linux-64bit.tar.gz -C s5cmd_2.2.2
+sudo mv s5cmd_2.2.2/s5cmd /usr/local/bin
+rm -r s5cmd_2.2.2
+rm s5cmd_2.2.2_Linux-64bit.tar.gz
 echo "Install conda: Done"
 echo "================================================"
 
