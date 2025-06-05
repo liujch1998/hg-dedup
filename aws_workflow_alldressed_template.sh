@@ -3,6 +3,7 @@ NUM_SHARDS=[[NUM_SHARDS]]
 NUM_NODES=[[NUM_NODES]]
 RANK=[[RANK]]
 REMOTE_DIR=[[REMOTE_DIR]]
+MINLEN="500"
 
 if [ "$INSTANCE_TYPE" != "x2idn" ] && [ "$INSTANCE_TYPE" != "i4i" ] && [ "$INSTANCE_TYPE" != "i7i" ]; then
     echo "Invalid instance type: $INSTANCE_TYPE"
@@ -83,7 +84,6 @@ for ((shard=$RANK; shard<$NUM_SHARDS; shard+=$NUM_NODES)); do
     echo "Run workflow for shard $shard: Starting ..."
     export NAME="shard_$(printf "%04d" $shard)"
     export INDEX_NAME="v6_${NAME}_u8"
-    export MINLEN="500"
 
     echo "Download data: Starting ..."
     time s5cmd run /data/download_scripts/downloader_${NAME}.txt >/dev/null 2>&1

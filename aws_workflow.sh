@@ -1,4 +1,10 @@
 INSTANCE_TYPE="i7i"
+MINLEN="500"
+SOURCE_DIR="s3://ai2-llm/pretraining-data/sources/cc_all_dressed/cc_news/minhash/jacc_filter"
+REMOTE_DIR="s3://ai2-llm/pretraining-data/sources/cc_all_dressed/cc_news/sa_minlen${MINLEN}/annotated"
+NAME="cc_news_minhash_jacc_filter"
+INDEX_NAME="v6_${NAME}_u8"
+
 if [ "$INSTANCE_TYPE" != "x2idn" ] && [ "$INSTANCE_TYPE" != "i4i" ] && [ "$INSTANCE_TYPE" != "i7i" ]; then
     echo "Invalid instance type: $INSTANCE_TYPE"
     exit 1
@@ -13,17 +19,23 @@ if [ "$INSTANCE_TYPE" == "x2idn" ]; then
     sudo mount $DEVICE /data
     sudo chown $USER:$USER /data
 elif [ "$INSTANCE_TYPE" == "i4i" ] || [ "$INSTANCE_TYPE" == "i7i" ]; then
-    DEVICE=/dev/nvme8n1
-    sudo mkfs -t ext4 $DEVICE
-    sudo mkdir /data
-    sudo mount $DEVICE /data
-    sudo chown $USER:$USER /data
-    for i in {1..7}; do
-        DEVICE=/dev/nvme${i}n1
+    # Dynamically find the first 8 devices with size 3.4T
+    DEVICES=($(lsblk -o NAME,SIZE -dn | awk '$2 == "3.4T" {print $1}' | head -8))
+    if [ ${#DEVICES[@]} -lt 8 ]; then
+        echo "Error: Less than 8 NVMe devices with size 3.4T found."
+        exit 1
+    fi
+    for i in ${!DEVICES[@]}; do
+        DEVICE="/dev/${DEVICES[$i]}"
+        if [ $i -eq 0 ]; then
+            MOUNT_POINT="/data"
+        else
+            MOUNT_POINT="/data-$i"
+        fi
         sudo mkfs -t ext4 $DEVICE
-        sudo mkdir /data-${i}
-        sudo mount $DEVICE /data-${i}
-        sudo chown $USER:$USER /data-${i}
+        sudo mkdir -p $MOUNT_POINT
+        sudo mount $DEVICE $MOUNT_POINT
+        sudo chown $USER:$USER $MOUNT_POINT
     done
 fi
 echo "Mount volumes: Done"
@@ -49,8 +61,11 @@ conda env create -f environment.yml
 conda activate hg-dedup
 pip install transformers awscli
 wget https://github.com/peak/s5cmd/releases/download/v2.2.2/s5cmd_2.2.2_Linux-64bit.tar.gz
-tar -xvzf s5cmd_2.2.2_Linux-64bit.tar.gz
-sudo mv s5cmd /usr/local/bin
+mkdir -p s5cmd_2.2.2
+tar -xvzf s5cmd_2.2.2_Linux-64bit.tar.gz -C s5cmd_2.2.2
+sudo mv s5cmd_2.2.2/s5cmd /usr/local/bin
+rm -r s5cmd_2.2.2
+rm s5cmd_2.2.2_Linux-64bit.tar.gz
 echo "Install conda: Done"
 echo "================================================"
 
@@ -63,12 +78,9 @@ echo "================================================"
 
 # Run workflow
 echo "Run workflow: Starting ..."
-export NAME="deduplication_ablations_v1_final_ablation_minhash_10x"
-export INDEX_NAME="v6_${NAME}_u8"
-export MINLEN="500"
 
 echo "Download data: Starting ..."
-time s5cmd cp -sp s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x/* /data/${NAME}/
+time s5cmd cp -sp ${SOURCE_DIR}/* /data/${NAME}/
 # keep 500GB
 # rm /data/${NAME}/**/shuffled_shard_0001*.jsonl.zst
 # rm /data/${NAME}/**/shuffled_shard_000092*.jsonl.zst
@@ -129,7 +141,7 @@ echo "Write back to jsonl: Done"
 echo "------------------------------------------------"
 
 echo "Upload data: Starting ..."
-time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ s3://ai2-llm/pretraining-data/sources/cc_all_dressed/all_dressed_subsamples/deduplication_ablations_v1/final_ablation/minhash_10x_suffarr_minlen${MINLEN}_annotated/
+time s5cmd cp -sp /data/${NAME}_minlen${MINLEN}_annotated/ ${REMOTE_DIR}/
 echo "Upload data: Done"
 echo "------------------------------------------------"
 
